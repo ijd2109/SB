@@ -1,0 +1,82 @@
+---
+title: "PCA"
+author: "Ian Douglas"
+date: "9/25/2019"
+output:
+  html_document:
+    number_sections: yes
+    toc: yes
+    df_print: paged
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+  pdf_document:
+    toc: yes
+    df_print: paged
+---
+```{r}
+library(corrplot)
+```
+
+# I. Load in the functional connectivity and dissimilarity data
+-Also read in the labels for plotting purposes
+```{r}
+fcon = readRDS('../data/processed/funcConnectivity.rds')
+fdis = readRDS('../data/processed/functionalDist.rds')
+if (nrow(fcon) == nrow(fdis) & ncol(fcon) == ncol(fdis)) 
+  {dim(list(fcon, fdis)[[sample(1:2,1)]])}
+```
+
+# II. Conduct principal components analysis
+-Note that there are more variables than participants, so the lowest dimensional space in which to project the principal components is equal to $n$, not $p$.
+```{r}
+funcPCA = prcomp(fcon, scale. = TRUE, center = TRUE, retx = TRUE)
+saveRDS(funcPCA, '../results/PCA/funcConnectivityPCAobj.rds')
+distPCA = prcomp(fdis, scale. = TRUE, center = TRUE, retx = TRUE)
+saveRDS(distPCA, '../results/PCA/funcDissimilarityPCAobj.rds')
+```
+Explanation: the `funcPCA` is produced from a set of variables, for which each participant has one score for each pair of brain regions (combinations of size 2 of 69 different units) summing to 2346 variables. Each score is the Pearson correlation between the preprocessed time series of each brain region with that of each other brain region.
+
+The `distPCA` object is derived from the same process, except that instead of computing the correlation between each time series, a measure of the dissimilarity between the two time series is calculated which is based on pearson correlation. For this reason the results are expected to be similar.
+
+### Correlation between the solutions
+```{r}
+pcCorr = cor(cbind(distPCA$x, funcPCA$x))
+nm = c(paste0("distPC",1:ncol(distPCA$x)),
+       paste0("corPC",1:ncol(funcPCA$x)))
+rownames(pcCorr) <- nm; colnames(pcCorr) <- nm
+methodCompareCor <- as.matrix(pcCorr[1:149, 150:298])
+# visualize the correlation between the first 30 dimensions across each method 
+corrplot(methodCompareCor[1:30,1:30])
+```
+
+As expected the methods are highly correlated.
+
+### Plot the percentage of the variance explained:
+```{r}
+plot(1:length(funcPCA$sdev), cumsum(funcPCA$sdev^2/2346), ylab = '% Variance explained', 
+     xlab = '# of principal of components',
+     main = 'Method: PCA on Pearson correlations')
+abline(v = mean(c(tail(which(cumsum(funcPCA$sdev^2/2346)<.8),1),
+                  which(cumsum(funcPCA$sdev^2/2346)>.8)[1])))
+plot(1:length(distPCA$sdev), cumsum(distPCA$sdev^2/2346), ylab = '% Variance explained', 
+     xlab = '# of principal of components',
+     main = 'Method: PCA on dissimilarity measure')
+abline(v = mean(c(tail(which(cumsum(distPCA$sdev^2/2346)<.8),1),
+                  which(cumsum(distPCA$sdev^2/2346)>.8)[1])))
+```
+To explain 80% of the variance, both methods required around 33 dimensions (far fewer than 2346).
+
+# Projection plots
+```{r, echo=FALSE}
+plot(scale(funcPCA$x[,1]),scale(funcPCA$x[,2]), 
+     col = 1+(as.numeric(as.factor(corPCAlbl$GROUP))^2), xlab = 'dimension 1', ylab = 'dimension 2')
+legend('topright', legend = c("PI","COMP"), fill = c(5,2))
+points(scale(distPCA$x[,1]),scale(distPCA$x[,2]), 
+       col = 1+(as.numeric(as.factor(corPCAlbl$GROUP))^2),
+     pch = 2, xlab = 'dimension 1', ylab = 'dimension 2')
+legend('bottomleft', legend = c("Cor","Dist"), pch = 1:2)
+title(main = "Cross-method similarity between Principal Components1 and 2")
+```
+
+

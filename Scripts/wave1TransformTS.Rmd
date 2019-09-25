@@ -1,0 +1,178 @@
+---
+title: "wave1TransformTS"
+author: "Ian Douglas"
+date: "9/24/2019"
+output:
+  html_document:
+    number_sections: yes
+    toc: yes
+    df_print: paged
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+  pdf_document:
+    toc: yes
+    df_print: paged
+---
+## The purpose of this script is twofold:
+1. Organize TS data by brain region for the purpose of computing distances between participants
+2. Compute correlations (within each participant) between brain regions to use as variables in modeling 
+```{r}
+library(tidyverse)
+library(TSdist) # not available for R vesion 3.6.1!!! (running script in 3.5.3)
+```
+# I. Load in the labels indicating the required time series
+```{r}
+lblDataToPull = readRDS('../data/labels/wave1Labels.rds')
+```
+
+# II. Read in each subject's time series data
+* For each subject, a data frame of time series is read
+* Each column represents a brain region measured at 130 time increments
+* Transpose these data, and rbind each subject's data, creating a single, new data frame for each brain region, containing a time series for each subject
+```{r}
+p = 69; n = nrow(lblDataToPull)
+### p = # brain regions to investigate (69 harvard-oxford regions)
+#### (8 custom-defined regions will be removed at the end of this script)
+### n = # of subjects after above filtering
+
+# Create p data frames with n rows and 130 columns each:
+masterDataFrameLong = data.frame()
+
+for (i in 1:nrow(lblDataToPull)) { # (for each subject)
+  folder = lblDataToPull$folder_name[i] #extract the name of the folder containing their TS
+  # Read in the subject-specific data frame w/ 1 column for each brain region's TS:
+  tmp_df = readRDS(paste0('../data/raw/raw_TS_by_subj/',folder,'/raw.rds'))
+  if (i == 1) { # ensure the column names are captured on the first iteration...
+    masterDataFrameLong = rbind(tmp_df, masterDataFrameLong)
+  } else masterDataFrameLong = rbind(masterDataFrameLong, tmp_df)
+}
+paste0("The output contains ", length(masterDataFrameLong), " data frames, one for each brain region, containing a 130-timepoint-long time series for the ", n, " participants")
+```
+Note, there are 8 custom regions still in the list for now.
+
+# III. Organize the data by brain region
+* Cut each 130 * 156 time series, and transpose it into one row per participant
+* This will result in p data frames, each one contains 130 columns, n rows
+* This enables the clustering of participants (rows) based on their TS within each brain region
+```{r}
+# lapply() will run one function on each of the list's elements.
+# Here each of the list's elements represents one brain region's TS's for all subjects
+# Note: the first 8 brain regions correspond to custom regions that we will omit now
+
+masterDfList = lapply( 
+  masterDataFrameLong[-1:-8], # deselect the custom regions here !!!
+  function(x) t(matrix(x, ncol=n, dimnames = list(NULL, lblDataToPull$IDENT_SUBID)))
+)
+paste0("masterDfList contains ", length(masterDfList), " elements, each with ", nrow(masterDfList[[1]])," row and ", ncol(masterDfList[[1]]), " columns.")
+```
+```{r}
+#write out the data for later clustering
+saveRDS(masterDfList, '../data/processed/subjTS4ClusteringByRegion.rds')
+```
+
+# IV. Part 1: Compute functional connectivity correlations
+NOTE: this will be run twice, once to compute a correlation, once to compute a time-series dissimilarity metric based on the Pearson correlation.
+```{r}
+masterDfBySubj = list() # initialize empty list
+# as a safety check, the following two lists will be filled with the subject ID 
+# of any participant whose times series data contained any NA
+# or whose functional connectivities could not be computed due to their time series
+# not containing any variance
+any_missing = c()
+any_zv = c()
+for (i in lblDataToPull$IDENT_SUBID) {
+  folder = as.character(lblDataToPull[lblDataToPull$IDENT_SUBID==i,"folder_name"])
+  #read in the i-th participant's time series data (containing all regions)
+  tmp_df = readRDS(paste0('../data/raw/raw_TS_by_subj/',folder,'/raw.rds'))
+  if (any(is.na(tmp_df))) { # run the check for NA
+    any_missing = c(any_missing, i)
+  }
+  # if all are not NA, compute the correlations:
+  CORR=cor(tmp_df[,-1:-8]) #remove the first 8 (custom) regions
+  if (any(is.na(CORR))) { #now check for failed correlation computations
+    any_zv = c(any_zv, i) # add the subject ID to the list if applicable
+    #compute the correlation matrix anyway, if possible, using 'complete observations' only
+    CORR=cor(tmp_df[-1:-8], use = 'complete.obs')
+  }
+  # extract the lower matrix so as not to create duplicative variables
+  CORR = lower.tri(CORR)*CORR
+  CORR = replace(CORR, CORR == 0, NA)
+  # unravel the correlation matrix (column by column) into a single participant's row
+  data_vec = as.numeric(na.omit(as.vector(CORR)))
+  #add it the list, assign the data a name consisting of the i-th participant's subject ID.
+  masterDfBySubj[[i]] = data_vec
+}
+# I chose to drop the particiipants who had some time series with zero-variance:
+# any_zv identified some subjects with NA; delete them
+funcDataList = masterDfBySubj[!names(masterDfBySubj) %in% any_zv]
+# Compile data frame!
+functional_data = as.data.frame(t(as.data.frame(funcDataList)))
+# Create and attach variable names IN SAME ORDER as the matrices were unraveled.
+vnm_inds = which(!is.na(as.vector(CORR)))
+vnm = paste0(rep(colnames(CORR),times=p),".X.",rep(colnames(CORR),each=p))[vnm_inds]
+names(functional_data) <- vnm
+
+#Write it out.
+saveRDS(functional_data, '../data/processed/funcConnectivity.rds')
+head(functional_data)
+```
+Note, some participants were dropped based on their missing correlations, we filter/recreate the list of labels that matches this data.
+```{r}
+corPCAlbl = left_join( # (will be used for plotting Principal Components later)
+  data.frame("IDENT_SUBID" = names(funcDataList),
+             stringsAsFactors = FALSE),
+  select(
+    readRDS('../data/labels/wave1Labels.rds'), IDENT_SUBID,age,GROUP
+  )
+)
+saveRDS(corPCAlbl, '../data/labels/funcConnlbls.rds')
+```
+
+# IV. Part 2: Compute functional dissimilarities
+#### This requires an R version predating 3.6.1, for which TSdist is not yet available
+```{r}
+# Running R version 3.5.3
+masterCorDistBySubj = list()
+any_missing = c()
+any_zv = c()
+for (i in lblDataToPull$IDENT_SUBID) {
+  folder = as.character(lblDataToPull[lblDataToPull$IDENT_SUBID==i,"folder_name"])
+  tmp_df = readRDS(
+    paste0('../data/raw/raw_TS_by_subj/',folder,'/raw.rds')
+    )[-1:-8] #take out the first 8 columns (with custom regions)
+  if (any(is.na(tmp_df))) {
+    any_missing = c(any_missing, i)
+  }
+  #TSdist::TSDatabaseDistances(., distance = 'cor') for Pearson Correlation-based dissim.
+  CORR = as.matrix(TSDatabaseDistances(t(tmp_df), distance = "cor"))
+  if (any(is.na(CORR))) {
+    any_zv = c(any_zv, i)
+  } else
+    CORR = lower.tri(CORR)*CORR
+    CORR = replace(CORR, CORR == 0, NA)
+    data_vec = as.numeric(na.omit(as.vector(CORR)))
+    masterCorDistBySubj[[i]] = data_vec
+}
+# any_zv identified some subjects with NA; delete them
+funcDistList = masterCorDistBySubj[!names(masterCorDistBySubj) %in% any_zv]
+#compile data frame
+functional_dist = as.data.frame(t(as.data.frame(funcDistList)))
+# Create and attach variable names IN SAME ORDER
+vnm_inds = which(!is.na(as.vector(CORR)))
+vnm = paste0(rep(names(tmp_df),times=p),".X.",rep(names(tmp_df),each=p))[vnm_inds]
+names(functional_dist) <- vnm
+# Done!
+
+saveRDS(functional_dist, '../data/processed/functionalDist.rds')
+head(functional_dist) # notice the row names were not preserved using the TSdist package!
+# save the labels based on the actual participants retained.
+distPCAlbl = left_join(
+  data.frame("IDENT_SUBID" =
+               lblDataToPull$IDENT_SUBID[!lblDataToPull$IDENT_SUBID %in% any_zv],
+             stringsAsFactors = FALSE), 
+  select(readRDS('../data/labels/wave1Labels.rds'), IDENT_SUBID,age,GROUP)
+)
+saveRDS(distPCAlbl,'../data/labels/funcDistlbls.rds')
+```
+
