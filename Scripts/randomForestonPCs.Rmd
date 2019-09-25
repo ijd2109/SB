@@ -1,0 +1,147 @@
+---
+title: "randomForestOnPCs"
+author: "Ian Douglas"
+date: "9/25/2019"
+output:
+  html_document:
+    number_sections: yes
+    toc: yes
+    df_print: paged
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+  pdf_document:
+    toc: yes
+    df_print: paged
+---
+```{r}
+library(randomForest)
+library(tidyverse)
+```
+
+Load in each PC solution, age, & PI/Comp designation
+```{r}
+cPCA = readRDS("../results/PCA/funcConnectivityPCAobj.rds")
+dPCA = readRDS("../results/PCA/funcDissimilarityPCAobj.rds")
+corPCAlbl = readRDS('../data/labels/funcConnlbls.rds')
+distPCAlbl = readRDS('../data/labels/funcDistlbls.rds')
+# Combine each as a data frame
+pcRFcor.dat = na.omit(as.data.frame(cbind(corPCAlbl,cPCA$x)))
+pcRFdiss.dat = na.omit(as.data.frame(cbind(distPCAlbl,dPCA$x)))
+```
+
+# Predict age with the PCs
+### Baseline solution with default hyperparameters on the correlation-based PCs
+```{r}
+#set a randomization seed before bootstrapping
+set.seed(111)
+```
+
+```{r}
+#randomForest::randomForest()
+ageRFcor = randomForest(
+  age ~ .-GROUP-IDENT_SUBID, data = pcRFcor.dat,
+  mtry = sqrt(ncol(cPCA$x)), # this is the default in sklearn
+  importance = TRUE)
+saveRDS(ageRFcor,"../results/RF/ageRFcor.rds")
+# Results:
+corTreeRes=data.frame(na.omit(corPCAlbl), stringsAsFactors = FALSE, 
+           "age_pred" = predict(ageRFcor)) %>%
+  mutate(ageDiff = age - age_pred) %>%
+  group_by(GROUP) %>%
+  summarize(avg_pred_error = mean(ageDiff), pred_sd = sd(ageDiff),
+            prior_avg = mean(age), prior_sd = sd(age),
+            n = n())
+write.csv(corTreeRes, "../results/RF/corTreeTblBaseline.csv")
+corTreeRes
+```
+
+*Results*: On average, the predicted age for the PI group is ~.18 years (about 2 months) younger than their actual age, while Comp predictions tend to overshoot their actaul age by about 4 months. However, the ~6-year wide confidence region around those estimates could mean that the exact opposite is just as plausible.
+
+### Baseline solution with default hyperparameters on the dissimilarity-based PCs
+```{r}
+#randomForest::randomForest()
+ageRFdis = randomForest(
+  age ~ .-GROUP-IDENT_SUBID, data = pcRFdiss.dat,
+  mtry = sqrt(ncol(dPCA$x)), # this is the default in sklearn
+  importance = TRUE)
+saveRDS(ageRFdis,"../results/RF/ageRFdis.rds")
+# Results:
+disTreeRes=data.frame(na.omit(distPCAlbl), stringsAsFactors = FALSE, 
+           "age_pred" = predict(ageRFdis)) %>%
+  mutate(ageDiff = age - age_pred) %>% #Raw error
+  group_by(GROUP) %>%
+  summarize(avg_pred_error = mean(ageDiff), pred_sd = sd(ageDiff),
+            prior_avg = mean(age), prior_sd = sd(age),
+            n = n())
+write.csv(disTreeRes, "../results/RF/distTreeTblBaseline.csv")
+disTreeRes
+```
+
+*Results*: The results are essentially the same for this method, with the exception that the bias of prediction decreased for Comps. However, the confidence intervals remain large.
+
+*Conclusion*: the predictions are fairly unbiased, relative to the variance shown in those predictions. Either method appears to perform equally as well, with the caveat that the PCs built on dissimilarity distances resulted in less bias (aggregating across both groups), but this did not affeect the variance. The second model could be seen as *marginally* better. *Lastly*, the variance of the actual ages is almost equal to the variance of the predicted values, suggesting that this tree is not explaining very much of the variance at all. 
+
+```{r, echo=FALSE, eval=FALSE}
+#*Explanation*:
+#$$
+#\sum_{i=1}^n(y_i - \bar{y})^2 = \sum_{i=1}^n(y_i - \hat{y_i})^2 #+\sum_{i=1}^n(\hat{y_i} - \bar{y})^2 
+#$$
+#    In our model, the left hand side of the above equation (the actual #variance of observed age) is about equal to the first summand on the right #side, whereas the variance explained by the model will be quantified by #the second summand. 
+```
+
+# Grid Search ...in R?(!)
+    In R the apply() family of functions can conduct a vectorized grid search over tunable hyperparameters.
+
+### Prepare grid
+```{r}
+param_grid = expand.grid(
+  "ntree"= c(500, 750, 1000),
+  "mtry"= c(seq(12,144,12)),
+  "data" = 1:2
+)
+#prepare the data list
+dataFrames = list(pcRFcor.dat,pcRFdiss.dat)
+head(param_grid[,1:10])        
+```
+
+* `expand.grid()` creates every combination of the variables provided, and puts each into a single column.
+* `apply()` will operate *simultaneously* on each column's information
+
+### Prepare the model function
+```{r}
+# each column will be supplied (as a vector) to the function:
+RF = function(x) {
+  model = randomForest(
+    age ~ .-GROUP-IDENT_SUBID, # know what is in your data in advance.
+    ntree = x[1], #x[1] = either 500, 750, or 1000
+    mtry = x[2], #x[2] = one of: seq(from=12,to=144,by=12)
+    data = dataFrames[[x[3]]], #x[3] = either 1 or 2 (indexing dataFrames)
+    importance = TRUE
+  )
+}
+```
+
+### Evaluate
+```{r}
+# The output of apply will be a list, in which each object is one fit of RF
+# the argument 2 means "operate on each column".
+tree_search = apply(param_grid, 2, RF)
+#saveRDS(tree_search, '../results/RF/allTrees.rds')
+```
+
+    lapply() operates on each element of a list simultaneously (so no indexing necessary). sapply() wraps lapply() so that the output is converted from a list to a simple vector
+```{r}
+R.sqs = lapply(tree_search, function(x) tail(x$rsq, 1))
+bestTreeRSQ = tree_search[[which.max(R.sqs)]]
+bestTreeRSQ
+#saveRDS(bestTreeRSQ, '../results/RF/bestTreeRSQ.rds')
+```
+    
+### Plot variable importances
+```{r}
+varImpPlot(bestTreeRSQ, cex = .7, main = 'Optimal Fit')
+```
+
+
+
