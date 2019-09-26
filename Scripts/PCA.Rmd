@@ -16,6 +16,7 @@ output:
 ---
 ```{r}
 library(corrplot)
+library(tidyverse)
 ```
 
 # Load in the functional connectivity and dissimilarity data
@@ -55,14 +56,18 @@ As expected the methods are highly correlated.
 
 ### Plot the percentage of the variance explained:
 ```{r}
-plot(1:length(funcPCA$sdev), cumsum(funcPCA$sdev^2/2346), ylab = '% Variance explained', 
+plot(1:length(funcPCA$sdev), cumsum(funcPCA$sdev^2/2346),
+     ylab = '% Variance explained', 
      xlab = '# of principal of components',
-     main = 'Method: PCA on Pearson correlations')
+     main = 'Method: PCA on Pearson correlations',
+     ylim = c(0,1))
 abline(v = mean(c(tail(which(cumsum(funcPCA$sdev^2/2346)<.8),1),
                   which(cumsum(funcPCA$sdev^2/2346)>.8)[1])))
-plot(1:length(distPCA$sdev), cumsum(distPCA$sdev^2/2346), ylab = '% Variance explained', 
+plot(1:length(distPCA$sdev), cumsum(distPCA$sdev^2/2346),
+     ylab = '% Variance explained', 
      xlab = '# of principal of components',
-     main = 'Method: PCA on dissimilarity measure')
+     main = 'Method: PCA on dissimilarity measure',
+     ylim = c(0,1))
 abline(v = mean(c(tail(which(cumsum(distPCA$sdev^2/2346)<.8),1),
                   which(cumsum(distPCA$sdev^2/2346)>.8)[1])))
 ```
@@ -87,11 +92,16 @@ This plot shows where the participants have ended up (their "PC scores") along d
 
 # Assess the variable loadings on each component
 ```{r}
-dim1loadings = data.frame("PC1" = cPCA$rotation[,1],
-                          "var" = names(cPCA$rotation[,1]),
+dim1loadings = data.frame("PC1" = funcPCA$rotation[,1],
+                          "var" = names(funcPCA$rotation[,1]),
                           stringsAsFactors = FALSE) %>%
   arrange(desc(abs(PC1)))
-dim1loadings[1:10,]
+dim2loadings=data.frame("PC2" = funcPCA$rotation[,2],
+                          "var" = names(funcPCA$rotation[,2]),
+                          stringsAsFactors = FALSE) %>%
+  arrange(desc(abs(PC2)))
+head(dim1loadings[1:10,])
+head(dim2loadings[1:10,])
 ```
 
 ```{r, eval=FALSE, echo=FALSE}
