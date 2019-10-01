@@ -1,0 +1,149 @@
+---
+title: "structuralDataPCA"
+author: "Ian Douglas"
+date: "9/30/2019"
+output:
+  html_document:
+    number_sections: yes
+    toc: yes
+    df_print: paged
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+  pdf_document:
+    toc: yes
+    df_print: paged
+---
+```{r}
+require(tidyverse)
+```
+
+# Read in the data
+1. Master data frame
+2. Labels that have been filtered by wave 1
+```{r}
+load( # the .Rdata file is named "monster_SB"
+  '../data/raw/3_ALL_long_cort_symptoms_brain_structure_function_epi_ages4-19_2019-05-15.Rdata'
+)
+# labels
+labels = readRDS("../data/labels/wave1Labels.rds")
+
+# Merge them together so that we retain only desired participants
+labels %>%
+  mutate("SUBJECTID_long" = 
+           sub("_fu0","", paste0(IDENT_SUBID,
+                                "_fu", as.character(wave_to_pull-1)))) %>%
+  left_join(., monster_SB, by = "SUBJECTID_long") %>%
+  assign(x = "df1", value = ., pos = .GlobalEnv)
+```
+
+# Select the structural data
+```{r}
+# also include labels and motion for now
+df2 <- df1[c(1:12,42:104, 113)] %>% 
+  select(-IDENT_SUBID.y, -index_wave) %>%
+  rename_at(vars("IDENT_SUBID.x", "age.x", "GROUP.x"), ~sub(".x$","",.))
+# remove NAs, only by those cases missing from the structural data
+df3 = df2 %>%
+  filter(complete.cases(df1[42:104]))
+# structural-only data, removing overlapping measures:
+structuralData = df3[11:72] %>%
+  select(-CortexVol, -TotalGrayVol)
+# remove some variables that have zero variance
+structuralData = structuralData[!sapply(structuralData, var) == 0]
+saveRDS(df3, "../data/structuralRaw+Labels+OverlappingVars.rds")
+```
+
+# PCA on the structural data
+```{r}
+structPCA = prcomp(x = structuralData, 
+                   scale. = TRUE, center = TRUE,
+                   retx = TRUE)
+saveRDS(structPCA, "../results/PCA/structPCAobj.rds")
+```
+
+# Evaluate fit
+```{r}
+plot(1:length(structPCA$sdev), cumsum(structPCA$sdev^2/ncol(structPCA$x)),
+     ylab = '% Variance explained', 
+     xlab = '# of principal of components',
+     main = 'Method: PCA on Structural Data',
+     ylim = c(0,1))
+abline(v = mean(c(tail(which(cumsum(structPCA$sdev^2/ncol(structPCA$x))<.8),1),
+                  which(cumsum(structPCA$sdev^2/ncol(structPCA$x))>.8)[1])))
+```
+
+# Raw variable loading plots onto PCs
+```{r}
+loadingsList = lapply(
+  1:7,
+  function(x) 
+    data.frame("loading" = structPCA$rotation[,x]) %>%
+    mutate(
+      "variable" = 
+        factor(rownames(structPCA$rotation),
+               levels =
+                 rownames(structPCA$rotation)[order(abs(loading))]),
+      "variance" = sapply(variable, function(z) var(structuralData[,z]))
+    )
+)
+loadingPlots = lapply(
+  1:6,
+  function(x)
+    ggplot(data = loadingsList[[x]]) +
+    geom_bar(stat = "identity", 
+             aes(x = variable, y = loading, fill = variance)) +
+    coord_flip() +
+    ggtitle(label = paste0("Loading onto PC", x))
+    
+)
+
+for (i in 1:6) {
+  ggsave(paste0("../results/PCA/plots/loadingsOntoPC",i,".jpeg"), 
+         plot = loadingPlots[[i]],
+         height = 7, width = 7, units = "in", device = "jpeg")
+}
+```
+
+# Projection plots
+```{r, echo=FALSE}
+jpeg("../results/PCA/plots/PC1+PC2structural.jpg",
+     height = 6, width = 9, units = "in", res = 128)
+plot(structPCA$x[,1],structPCA$x[,2], 
+     col = 1+(as.numeric(as.factor(df3$GROUP))^2), 
+     xlab = 'dimension 1', ylab = 'dimension 2', pch = 16,
+     main = "Data Projected onto PC1 and PC2")
+legend('topright', legend = c("PI","COMP"), fill = c(5,2))
+dev.off()
+jpeg("../results/PCA/plots/PC1+PC3structural.jpg",
+     height = 6, width = 9, units = "in", res = 128)
+plot(structPCA$x[,1],structPCA$x[,3], 
+     col = 1+(as.numeric(as.factor(df3$GROUP))^2), 
+     xlab = 'dimension 1', ylab = 'dimension 3', pch = 16,
+     main = "Data Projected onto PC1 and PC3")
+legend('topright', legend = c("PI","COMP"), fill = c(5,2))
+dev.off()
+jpeg("../results/PCA/plots/PC2+PC3structural.jpg",
+     height = 6, width = 9, units = "in", res = 128)
+plot(structPCA$x[,2],structPCA$x[,3], 
+     col = 1+(as.numeric(as.factor(df3$GROUP))^2), 
+     xlab = 'dimension 2', ylab = 'dimension 3', pch = 16,
+     main = "Data Projected onto PC2 and PC3")
+legend('topright', legend = c("PI","COMP"), fill = c(5,2))
+dev.off()
+```
+
+```{r}
+plot(structPCA$x[,1],structPCA$x[,2], 
+     col = 1+(as.numeric(as.factor(df3$GROUP))^2), 
+     xlab = 'dimension 1', ylab = 'dimension 2', pch = 16,
+     main = "Data Projected onto PC1 and PC2")
+legend('topright', legend = c("PI","COMP"), fill = c(5,2))
+
+plot(structPCA$x[,1],structPCA$x[,3], 
+     col = 1+(as.numeric(as.factor(df3$GROUP))^2), 
+     xlab = 'dimension 1', ylab = 'dimension 3', pch = 16,
+     main = "Data Projected onto PC1 and PC3")
+legend('topright', legend = c("PI","COMP"), fill = c(5,2))
+```
+
