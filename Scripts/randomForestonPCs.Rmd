@@ -243,5 +243,34 @@ classTreeTune3 = randomForest(
 
 ```
 
+# structural data
+```{r}
+# get from the PCA script, or in the results/PCA folder
+structForest_dat = structPCAScores %>%
+  mutate_at(vars("GROUP"), as.factor) %>%
+  select(-IDENT_SUBID) %>%
+  #some age were missing so delete them
+  filter(complete.cases(.))
+rownames(structForest_dat) <- structPCAScores$IDENT_SUBID[
+  complete.cases(structPCAScores)]
+# balanced train-test split
+# note:
+# COMP   PI 
+#   84   63 
+set.seed(111)
+i.tr = c(
+  #let's make the groups balanced in the train set
+  sample(which(structForest_dat$GROUP=="PI"), size = round(63*.7)),
+  sample(which(structForest_dat$GROUP=="COMP"), size = round(63*.7))
+)
+structForest_trainDat = structForest_dat[i.tr,]
+structForest_testDat = structForest_dat[-i.tr, ]
+# predict group
+ctrl = cforest_control(nresample = 1000, testtype = "MonteCarlo",
+                     mtry = 5)
+groupStructTree = party::cforest(GROUP ~ .-age, data = structForest_trainDat, 
+                                 controls = ctrl)
+
+```
 
 

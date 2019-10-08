@@ -1,0 +1,132 @@
+---
+title: "qda"
+author: "Ian Douglas"
+date: "10/5/2019"
+output:
+  html_document:
+    number_sections: yes
+    toc: yes
+    df_print: paged
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+  pdf_document:
+    toc: yes
+    df_print: paged
+---
+#QDA on raw connectivity data
+```{r}
+# read in the processed connectivity and dissimilarity data
+fcon = readRDS('../data/processed/funcConnectivity.rds')
+fdis = readRDS('../data/processed/functionalDist.rds')
+# read in the labels to attach the groups
+conlbls = readRDS("../data/labels/funcConnlbls.rds")
+dislbls = readRDS("../data/labels/funcDistlbls.rds")
+
+nrow(conlbls) == nrow(fcon) && nrow(dislbls) == nrow(fdis)
+```
+
+# First do logistic regression with the top several variables
+ -Get a baseline on which to base the evaluation of model comparisons
+```{r}
+baselineLogReg = cbind(
+  data.frame("Variable" = ifelse(names(fcon) == names(fdis), names(fcon), NA_character_)),
+  do.call("rbind", 
+          lapply(
+            names(fcon),
+            function(x) {
+              c.modSum = summary(glm(as.factor(conlbls$GROUP)~fcon[, x], family = "binomial"))
+              d.modSum = summary(glm(as.factor(dislbls$GROUP)~fdis[, x], family = "binomial"))
+              as.data.frame(
+                list("con.coef"=c.modSum$coefficients[2],
+                     "con.p.val"=c.modSum$coefficients[8],
+                     "dis.coef"=d.modSum$coefficients[2],
+                     "dis.p.val"=d.modSum$coefficients[8]))
+            })))
+sigPredictors = baselineLogReg[
+  baselineLogReg$con.p.val <= .05 | baselineLogReg$dis.p.val <= .05, ]
+#coefplots
+sortedCoefs =
+  rbind(data.frame(
+    "var"= factor(sigPredictors$Variable, 
+                  levels=rev(sigPredictors$Variable[order(sigPredictors$con.coef)])),
+    "model" = "cor", 
+    "beta" = sigPredictors$con.coef),
+    data.frame("var"= factor(sigPredictors$Variable, 
+                             levels=rev(sigPredictors$Variable[order(sigPredictors$dis.coef)])),
+               "model" = "dist",
+               "beta" = sigPredictors$dis.coef))
+sortedCoefs %>%
+  ggplot(data = .) +
+  geom_point(aes(x = var, y = beta)) +
+  facet_grid(~model) +
+  coord_flip()
+```
+
+```{r}
+# Just the top 30:
+top30cor = rev(sigPredictors$Variable[order(sigPredictors$con.coef)])[1:30]
+top30diss = rev(sigPredictors$Variable[order(sigPredictors$dis.coef)])[1:30]
+```
+
+
+# Train-test splits
+```{r}
+bestCorVars = fcon[,names(fcon) %in% sigPredictors$Variable]
+bestCorPCA = prcomp(bestCorVars,scale. = TRUE, center = TRUE, retx = TRUE)$x
+bestDissVars = fdis[,names(fdis) %in% sigPredictors$Variable]
+bestDissPCA = prcomp(bestDissVars, scale. = TRUE, center = TRUE, retx = TRUE)$x
+
+testind = sample(1:149, replace = FALSE, size = round(149*.3,digits=0))
+
+bestCorVars.tr = bestCorVars[-testind,]; bestCorPCA.tr = bestCorPCA[-testind,]
+bestCorVars.te = bestCorVars[testind,]; bestCorPCA.te = bestCorPCA[testind,]
+bestDissVars.tr = bestDissVars[-testind,]; bestDissPCA.tr = bestDissPCA[-testind,]
+bestDissVars.te = bestDissVars[testind,]; bestDissPCA.te = bestDissPCA[testind,]
+
+y = factor(conlbls$GROUP, levels = c("COMP", "PI"))
+y.tr = y[-testind]; y.te = y[testind]
+```
+
+# Train models
+```{r}
+# y.tr
+# COMP   PI 
+#   62   42 
+#we can only use 41 variables at a time
+topCorAll = sigPredictors %>%
+  arrange(abs(desc(con.coef))) %>% select(Variable) %>% .$Variable %>% as.character
+topDissAll = sigPredictors %>%
+  arrange(abs(desc(con.coef))) %>% select(Variable) %>% .$Variable %>% as.character
+corRawQDA = MASS::qda(x = bestCorVars.tr[,topCorAll[1:40]], grouping = y.tr)
+corPCAQDA = MASS::qda(x = bestCorPCA.tr[,1:41], grouping = y.tr)
+dissRawQDA = MASS::qda(x = bestDissVars.tr[,topDissAll[1:40]], grouping = y.tr)
+dissPCAQDA = MASS::qda(x = bestDissPCA.tr[,1:41], grouping = y.tr)
+```
+
+# Test
+```{r}
+table(predict(corRawQDA, bestCorVars.te[,topCorAll[1:40]])$class, y.te)
+table(predict(corPCAQDA, bestCorPCA.te[,1:41])$class, y.te)
+table(predict(dissRawQDA, bestDissVars.te[,topDissAll[1:40]])$class, y.te)
+table(predict(dissPCAQDA, bestDissPCA.te[,1:41])$class, y.te)
+```
+
+# using structural data
+```{r}
+structuralPCADataFrame = readRDS("../data/structPCAScoresLabelled.rds")
+# Train test split
+trainind = sample(1:nrow(structuralPCADataFrame), replace = FALSE, 
+                  size = round(nrow(structuralPCADataFrame)*.7,digits=0))
+trainXstruct = 
+  structuralPCADataFrame[trainind,-1:-3]
+testXstruct=
+  structuralPCADataFrame[-trainind,-1:-3]
+trainYstruct = structuralPCADataFrame[trainind, "GROUP"]
+testYstruct = structuralPCADataFrame[-trainind, "GROUP"]
+
+structQDA = MASS::qda(x=trainXstruct,grouping = as.factor(trainYstruct))
+# cross val score:
+table(predict(structQDA, testXstruct)$class, testYstruct)
+```
+

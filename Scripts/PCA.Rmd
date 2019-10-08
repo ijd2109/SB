@@ -109,3 +109,78 @@ head(dim2loadings[1:10,])
 #from numpy import genfromtxt
 #load = genfromtxt('../results/PCA/cPCAloadings.csv', delimiter=',')
 ```
+
+# Structural data PCA
+```{r}
+# read in the data and the list of variables to include
+rawStructuralData = read.csv("../data/raw/structuralBrainData.csv")
+varListStructural = read.csv("../data/structuralVarNames20191002_MVT.csv")
+varsToKeep = as.character(varListStructural$var[!varListStructural$X...don.t.include == "X"])
+# get "labels" from the project folder as well:
+labels = labels %>% 
+  mutate(toMatch = 
+           ifelse(wave_to_pull==1,IDENT_SUBID,paste0(IDENT_SUBID,"_fu",wave_to_pull-1)))
+rawRowSelect = match(labels$toMatch, rawStructuralData$Measure.volume)
+# filter the raw data by choosing the wave1 data:
+# also select the columns in varsToKeep
+structuralRawData = rawStructuralData[rawRowSelect, varsToKeep]
+saveRDS(structuralRawData, "../data/processed/wave1structuralData.rds")
+```
+
+# Run PCA
+```{r}
+#note:
+# "SB028" "SB058" "SB102" "SB155" "SB163" "SB201" "SB202" "SB258" "SB282"
+# the above participants do not have wave1 structure data; deleting (since other data is wave1)
+keepRows = complete.cases(structuralRawData)
+brainStructurePCA = prcomp(structuralRawData[keepRows,], 
+                           scale. = TRUE, center = TRUE, retx = TRUE)
+saveRDS(brainStructurePCA, "../results/PCA/structPCAobj.rds")
+```
+
+#add the labels back in
+```{r}
+structPCAScores = data.frame(
+  labels[keepRows, c("IDENT_SUBID","age","GROUP")],
+  brainStructurePCA$x
+)
+saveRDS(structPCAScores, "../data/structPCAScoresLabelled.rds")
+```
+
+#Plots
+### Variance-Explained
+```{r}
+plot(1:length(brainStructurePCA$sdev), cumsum(brainStructurePCA$sdev^2/24),
+     ylab = '% Variance explained', 
+     xlab = '# of principal of components',
+     main = 'Method: PCA on Pearson correlations',
+     ylim = c(0,1))
+abline(v = mean(c(tail(which(cumsum(brainStructurePCA$sdev^2/24)<.8),1),
+                  which(cumsum(brainStructurePCA$sdev^2/24)>.8)[1])))
+```
+
+### Projection plots
+```{r}
+par(mfrow = c(2,2))
+plot(structPCAScores[,"PC1"], structPCAScores[,"PC2"],
+     col = 1+(as.numeric(as.factor(structPCAScores$GROUP))^2), 
+     xlab = 'dimension 1', ylab = 'dimension 2', pch = 16, cex = 1.5)
+legend('topright', legend = c("PI","COMP"), fill = c(5,2))
+title("PIs and Comps projected onto PC 1 & 2")
+plot(structPCAScores[,"PC1"], structPCAScores[,"PC3"],
+     col = 1+(as.numeric(as.factor(structPCAScores$GROUP))^2), 
+     xlab = 'dimension 1', ylab = 'dimension 3', pch = 16, cex = 1.5)
+legend('topright', legend = c("PI","COMP"), fill = c(5,2))
+title("PIs and Comps projected onto PC 1 & 3")
+plot(structPCAScores[,"PC2"], structPCAScores[,"PC3"],
+     col = 1+(as.numeric(as.factor(structPCAScores$GROUP))^2), 
+     xlab = 'dimension 2', ylab = 'dimension 3', pch = 16, cex = 1.5)
+legend('topright', legend = c("PI","COMP"), fill = c(5,2))
+title("PIs and Comps projected onto PC 2 & 3")
+plot(structPCAScores[,"PC1"], structPCAScores[,"PC4"],
+     col = 1+(as.numeric(as.factor(structPCAScores$GROUP))^2), 
+     xlab = 'dimension 1', ylab = 'dimension 4', pch = 16, cex = 1.5)
+legend('topright', legend = c("PI","COMP"), fill = c(5,2))
+title("PIs and Comps projected onto PC 1 & 4")
+```
+
