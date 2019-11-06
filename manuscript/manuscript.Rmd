@@ -2,18 +2,19 @@
 title: "Model Comparison Paper"
 author: "Ian Douglas, Michelle VanTeigham† & Paul A. Bloom†"
 date: "November 6, 2019"
-output: pdf_document
+output:
+  pdf_document: default
 csl: apa.xml
 bibliography: devbib.bib
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-require(papaja)
-require(ggplot2)
-require(tidyverse)
+library(papaja)
+library(ggplot2)
+library(tidyverse)
 ```
 
 METHODS
 
-The sample we analyzed derived from a longitudinal study of 344 youth between the ages of 3 and 18 whose early caregiving experiences involved institutional care (i.e., adoption or foster care, N = 115) or whose biological families raised them (N = 229). The sample retained for this study included the first (N = 117) or second (N = 39) waves of the above, whichever was the first for each particpant. All participants recruited at the third wave were excluded because a different MRI machine was used. 
+  The sample we analyzed derived from a longitudinal study of 344 youth between the ages of 3 and 18 whose early caregiving experiences involved institutional care (i.e., adoption or foster care, N = 115) or whose biological families raised them (N = 229). The sample retained for this study included the first (N = 117) or second (N = 39) waves of the above, whichever was the first for each particpant. All participants recruited at the third wave were excluded because a different MRI machine was used. 
