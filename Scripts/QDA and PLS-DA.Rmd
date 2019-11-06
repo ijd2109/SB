@@ -1,5 +1,5 @@
 ---
-title: "qda"
+title: "qda and partial least squares"
 author: "Ian Douglas"
 date: "10/5/2019"
 output:
@@ -14,6 +14,10 @@ output:
     toc: yes
     df_print: paged
 ---
+```{r}
+require(DiscriMiner)
+```
+
 #QDA on raw connectivity data
 ```{r}
 # read in the processed connectivity and dissimilarity data
@@ -87,6 +91,37 @@ bestDissVars.te = bestDissVars[testind,]; bestDissPCA.te = bestDissPCA[testind,]
 y = factor(conlbls$GROUP, levels = c("COMP", "PI"))
 y.tr = y[-testind]; y.te = y[testind]
 ```
+
+# Partial Least squares Discriminant Analysis
+```{r}
+# use cross validation to minimize test set error rate
+dissPLS.DA = plsDA(bestDissVars, group = y, 
+                 validation = "learntest",
+                 learn = c(1:length(y))[!c(1:length(y)) %in% testind], 
+                 test = testind,
+                 autosel = TRUE)
+corPLS.DA = plsDA(bestCorVars, group = y, 
+                 validation = "learntest", 
+                 learn = c(1:length(y))[!c(1:length(y)) %in% testind], 
+                 test = testind,
+                 autosel = TRUE)
+
+dissPLS.DA_5kCV = plsDA(bestDissVars, group = y,
+                        cv = "LKO", k = 5, # 5-fold CV
+                        autosel = TRUE)
+corPLS.DA_5kCV = plsDA(bestCorVars, group = y,
+                       cv = "LKO", k = 5, # 5-fold CV
+                       autosel = TRUE)
+vip.dissPLS_5k = as.data.frame(
+  list("var" = names(dissPLS.DA_5kCV$VIP[,1]),
+       "importance" = dissPLS.DA_5kCV$VIP[,1])) %>% 
+  arrange(desc(abs(importance))) %>%
+  mutate_at("var", ~factor(., levels = rev(.)))
+ggVarImp = ggplot(vip.dissPLS_5k) +
+  geom_bar(stat = "identity", aes(var, importance)) +
+  coord_flip()
+```
+
 
 # Train models
 ```{r}
