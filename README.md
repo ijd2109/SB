@@ -3,9 +3,12 @@ SB data analysis scripts and output.
 
 TO-DO now: 
 - decide one outcome for all different models.
+- DISCUSS: functional connectivity network plot by variable importance
 - DISCUSS: random forest with structural PCs
 - DISCUSS: cross validation on hold-out set
-- DISCUSS: discuss with mvt and pab potentially redundant structural variables
+- DISCUSS: structural PCA loadings, and potentially redundant structural variables
+
+
 -To try later: clustering the 69 regions first into features, and then using those to predit CBCL and group classification.
 -ROC curve (pROC package)
 -compare the
