@@ -64,7 +64,7 @@ masterDfList = lapply(
   masterDataFrameLong[-1:-8], # deselect the custom regions here !!!
   function(x) t(matrix(x, ncol=n, dimnames = list(NULL, lblDataToPull$IDENT_SUBID)))
 )
-paste0("masterDfList contains ", length(masterDfList), " elements, each with ", nrow(masterDfList[[1]])," row and ", ncol(masterDfList[[1]]), " columns.")
+paste0("masterDfList contains ", length(masterDfList), " elements, each with ", nrow(masterDfList[[1]])," rows and ", ncol(masterDfList[[1]]), " columns.")
 ```
 ```{r}
 #write out the data for later clustering
@@ -90,20 +90,48 @@ for (i in lblDataToPull$IDENT_SUBID) {
   }
   # if all are not NA, compute the correlations:
   CORR=cor(tmp_df[,-1:-8]) #remove the first 8 (custom) regions
-  if (any(is.na(CORR))) { #now check for failed correlation computations
-    any_zv = c(any_zv, i) # add the subject ID to the list if applicable
-    #compute the correlation matrix anyway, if possible, using 'complete observations' only
-    CORR=cor(tmp_df[-1:-8], use = 'complete.obs')
-  }
+  # Note skipping the test for non zero variance because NA will be filtered
+  # out later.
+  
+  #if (any(is.na(CORR))) { #now check for failed correlation computations
+  #  any_zv = c(any_zv, i) # add the subject ID to the list if applicable
+  #  #compute the correlation matrix anyway, if possible, using 'complete
+  #  # observations' only
+  #  CORR=cor(tmp_df[-1:-8], use = 'complete.obs')
+  #}
   # extract the lower matrix so as not to create duplicative variables
-  CORR = lower.tri(CORR)*CORR
-  CORR = replace(CORR, CORR == 0, NA)
-  # unravel the correlation matrix (column by column) into a single participant's row
-  data_vec = as.numeric(na.omit(as.vector(CORR)))
-  #add it the list, assign the data a name consisting of the i-th participant's subject ID.
+  #CORR = lower.tri(CORR)*CORR
+  #CORR = replace(CORR, CORR == 0, NA)
+  # Extract the data from the lower traingle of the matrix
+  lower.tri.data = c()
+  for (j in 1:(ncol(CORR)-1)) {
+    col.j = as.numeric(CORR[(j + 1):ncol(CORR), j])
+    lower.tri.data <- c(lower.tri.data, col.j)
+  }
   masterDfBySubj[[i]] = data_vec
+  
+  # skipping below
+  # unravel the correlation matrix (column by column) into a single participant's row
+  #data_vec = as.numeric(na.omit(as.vector(CORR)))
+  #add it the list, assign the data a name consisting of the i-th participant's subject ID.
+  #masterDfBySubj[[i]] = data_vec
 }
-# I chose to drop the particiipants who had some time series with zero-variance:
+
+# repeat the loop to grab the same combination of region names
+sample.folder = as.character(lblDataToPull[1,"folder_name"])
+sample.df = readRDS(
+  paste0('~/DANL/SB/data/raw/raw_TS_by_subj/', sample.folder,'/raw.rds'))
+varNames = names(sample.df[-1:-8])
+namesMatrix = matrix(
+  paste0(rep(varNames,times= length(varNames)),".X.",
+         rep(varNames,each= length(varNames))), byrow = FALSE,
+  ncol = length(varNames))
+lower.tri.names = c()
+for (j in 1:(ncol(namesMatrix)-1)) {
+  names.j = namesMatrix[(j + 1):ncol(namesMatrix), j]
+  lower.tri.names <- c(lower.tri.names, names.j)
+}
+# I chose to drop the participants who had some time series with zero-variance:
 # any_zv identified some subjects with NA; delete them
 funcDataList = masterDfBySubj[!names(masterDfBySubj) %in% any_zv]
 # Compile data frame!

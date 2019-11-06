@@ -1,0 +1,76 @@
+---
+title: "RFE"
+author: "Ian Douglas"
+date: "10/23/2019"
+output:
+  html_document:
+    number_sections: yes
+    toc: yes
+    df_print: paged
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+  pdf_document:
+    toc: yes
+    df_print: paged
+---
+```{r}
+require(caret)
+require(tidyverse)
+```
+
+# read in labelled functional data
+```{r}
+fCor = readRDS("~/DANL/SB/data/processed/labelledFCor.rds")
+fDiss = readRDS("~/DANL/SB/data/processed/labelledFDiss.rds")
+```
+
+# Recursive feature elimination
+```{r}
+# (1) Scale
+# fCor already contains pearson correlations, so use psych::fisherz()
+fCor.scl = fCor %>% select(-age) %>% 
+  select_if(is.numeric) %>%
+  mutate_all(psych::fisherz)
+fDiss.scl = scale(fDiss %>% select(-age) %>% select_if(is.numeric))
+# (2) eliminate highly collinear variables
+# Note, using a higher threshold because columns of region-region FC may be
+# correlated when a given single region is correlated with two (or more) others
+fCor_ncollinear = fCor.scl[,
+  -findCorrelation(cor(fCor.scl), cutoff = .8)]
+fDiss_ncollinear = fDiss.scl[,
+  -findCorrelation(cor(fDiss.scl), cutoff = .8)]
+# Set RFE control
+ctrl = rfeControl(functions = rfFuncs,
+                  method = "repeatedcv", repeats = 10,
+                  saveDetails = TRUE)
+# Run on each data set
+rfeCor = rfe(x = fCor_ncollinear, y = as.factor(fCor$GROUP),
+             sizes = c(2^(2:9),seq(ncol(fCor_ncollinear)-201,
+                                   ncol(fCor_ncollinear)-1, by = 10)),
+             rfeControl = ctrl)
+rfeDiss = rfe(x = fDiss_ncollinear, y = as.factor(fDiss$GROUP),
+              sizes = c(2^(2:9),seq(ncol(fDiss_ncollinear)-201,
+                                    ncol(fDiss_ncollinear)-1, by = 10)),
+              rfeControl = ctrl)
+
+resultsAccuracy = as.data.frame(rbind(rfeCor$results, rfeDiss$results)) %>%
+  mutate(model = c(rep("correlation", times = nrow(rfeCor$results)),
+                   rep("dissimiliarity", times = nrow(rfeDiss$results))))
+ggplot(resultsAccuracy, aes(y = Accuracy, x = Variables)) +
+  geom_point() + 
+  geom_errorbar(aes(ymax=Accuracy+2*AccuracySD, ymin=Accuracy-2*AccuracySD)) +
+  facet_grid(~model)
+```
+
+    Conclusions: all non-collinear variables should be retained
+```{r}
+saveRDS(cbind(fCor[,c("IDENT_SUBID","age","GROUP")],
+              as.data.frame(fCor_ncollinear)),
+        "~/DANL/SB/data/processed/nonCollinear_fCor.rds")
+saveRDS(cbind(fDiss[,c("IDENT_SUBID","age","GROUP")],
+              as.data.frame(fDiss_ncollinear)),
+        "~/DANL/SB/data/processed/nonCollinear_fDiss.rds")
+
+```
+

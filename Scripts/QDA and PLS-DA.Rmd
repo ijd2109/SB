@@ -16,7 +16,416 @@ output:
 ---
 ```{r}
 require(DiscriMiner)
+require(caret)
+require(tidyverse)
+library(igraph)
 ```
+
+# Read in functional connectivity data
+### Containing non-collinear features only
+### Also read in all functional connectivity features
+### Read in the names of each harvard oxford region
+```{r}
+fCor_nc = readRDS(
+  "~/DANL/SB/data/processed/nonCollinear_fCor.rds"
+)
+fDiss_nc = readRDS(
+  "~/DANL/SB/data/processed/nonCollinear_fDiss.rds"
+)
+
+# Entire functional connectivity matrices:
+fCor = readRDS("~/DANL/SB/data/processed/labelledFCor.rds")
+fDiss = readRDS("~/DANL/SB/data/processed/labelledFDiss.rds")
+```
+
+# Partial Least Squares - DA; cross-validated
+### Train-test splits
+```{r}
+# USING CARET IN-BUILT FUNCTION INSTEAD
+
+# Training sample function to create n_samples unique train-test splits
+
+# sampleTrain = function(sample_size, n_samples, replace = FALSE) {
+#   training_indices = vector(mode = "list", length = n_samples)
+#   for (i in 1:length(training_indices)) {
+#     set.seed(i)
+#     training_indices[[i]] = sample(
+#       1:sample_size, replace = replace, size = round(sample_size*.7,digits=0)
+#     )
+#   }
+#   return(training_indices)
+# }
+```
+### Fit models
+### Each model dataset will be used in 10-fold repeated 70/30 CV
+```{r}
+tr_FC = createDataPartition(1:nrow(fCor_nc), times = 10, p = .7)
+tr_FD = createDataPartition(1:nrow(fDiss_nc), times = 10, p = .7)
+
+pls_FC = vector(mode = "list", length= 10)
+pls_FD = vector(mode = "list", length= 10)
+for (i in 1:10) {
+  pls_FC[[i]] = plsDA(
+          fCor_nc[grep("\\.X\\.", names(fCor_nc))],
+          group = as.factor(fCor_nc$GROUP),
+          validation = "learntest",
+          learn = tr_FC[[i]],
+          test = c(1:nrow(fCor_nc))[-match(tr_FC[[i]],c(1:nrow(fCor_nc)))],
+          autosel = FALSE # don't waste time on autosellection for these loops
+        )
+  pls_FD[[i]] = plsDA(
+          fDiss_nc[grep("\\.X\\.", names(fDiss_nc))],
+          group = as.factor(fDiss_nc$GROUP),
+          validation = "learntest",
+          learn = tr_FD[[i]],
+          test = c(1:nrow(fDiss_nc))[-match(tr_FD[[i]],c(1:nrow(fDiss_nc)))],
+          autosel = FALSE # don't waste time on autosellection for these loops
+        )
+}
+#FC:
+# lapply(sampleTrain(nrow(fCor_nc), 10),
+#   function(x) {
+#     train.indices = as.numeric(as.vector(unlist(x)))
+#     plsDA(
+#       fCor_nc[grep("\\.X\\.", names(fCor_nc))],
+#       group = as.factor(fCor_nc$GROUP),
+#       validation = "learntest",
+#       learn = train.indices,
+#       test = c(1:nrow(fCor_nc))[-match(train.indices,c(1:nrow(fCor_nc)))],
+#       autosel = TRUE
+#     )
+#   }
+# )
+# # FD:
+# nc_DissPLS.DA = lapply(sampleTrain(nrow(fDiss_nc), 10),
+#   function(x) {
+#     plsDA(
+#       fDiss_nc[grep("\\.X\\.", names(fDiss_nc))], 
+#       group = as.factor(fDiss_nc$GROUP),
+#       validation = "learntest",
+#       learn = train.indices,
+#       test = c(1:nrow(fDiss_nc))[-match(train.indices,c(1:nrow(fDiss_nc)))], 
+#       autosel = TRUE
+#     )
+#   }
+# )
+```
+
+# Baseline PLS fits
+```{r}
+pls_FC_fullData = plsDA(fCor_nc[grep("\\.X\\.", names(fCor_nc))],
+                      group = as.factor(fCor_nc$GROUP), validation = NULL, 
+                      autosel = TRUE)
+pls_FD_fullData = plsDA(fDiss_nc[grep("\\.X\\.", names(fDiss_nc))],
+                      group = as.factor(fDiss_nc$GROUP), validation = NULL, 
+                      autosel = TRUE)
+# and the fits using all features
+pls_FC_fullData.allX = plsDA(fCor[grep("\\.X\\.", names(fCor))],
+                             group = as.factor(fCor$GROUP), 
+                             validation = NULL,
+                             autosel = TRUE)
+pls_FD_fullData.allX = plsDA(fDiss[grep("\\.X\\.", names(fCor))],
+                             group = as.factor(fCor$GROUP), 
+                             validation = NULL,
+                             autosel = TRUE)
+```
+
+# Compile PLS results data frames for viz and review
+```{r}
+regionNames = read.csv("../documentation/ho_key.csv", 
+                       stringsAsFactors = FALSE)
+results_plsFC = as.data.frame(
+  list("var" = names(pls_FC_fullData$VIP[,1]),
+       "importance" = pls_FC_fullData$VIP[,1])) %>% 
+  arrange(desc(abs(importance))) %>%
+  mutate_at("var", ~factor(., levels = rev(.)))
+# add region names
+results_plsFC$region_1 = as.character(apply(results_plsFC["var"], 1,
+  function(x) {
+    r1 = strsplit(x, split = "\\.X\\.")[[1]][1]
+    r1_num = as.numeric(sub("^.+_","", r1))
+    if (grepl("_cortical_", r1)) {
+      return(regionNames$roiName[r1_num])
+    } else
+      return(regionNames$roiName[r1_num + 48])
+  }
+))
+
+results_plsFC$region_2 = as.character(apply(results_plsFC["var"], 1,
+  function(x) {
+    r2 = strsplit(x, split = "\\.X\\.")[[1]][2]
+    r2_num = as.numeric(sub("^.+_","", r2))
+    if (grepl("_cortical_", r2)) {
+      return(regionNames$roiName[r2_num])
+    } else
+      return(regionNames$roiName[r2_num + 48])
+  }
+))
+
+results_plsFD = as.data.frame(
+  list("var" = names(pls_FD_fullData$VIP[,1]),
+       "importance" = pls_FD_fullData$VIP[,1])) %>% 
+  arrange(desc(abs(importance))) %>%
+  mutate_at("var", ~factor(., levels = rev(.)))
+# add region names
+results_plsFD$region_1 = as.character(apply(results_plsFD["var"], 1,
+  function(x) {
+    r1 = strsplit(x, split = "\\.X\\.")[[1]][1]
+    r1_num = as.numeric(sub("^.+_","", r1))
+    if (grepl("_cortical_", r1)) {
+      return(regionNames$roiName[r1_num])
+    } else
+      return(regionNames$roiName[r1_num + 48])
+  }
+))
+
+results_plsFD$region_2 = as.character(apply(results_plsFD["var"], 1,
+  function(x) {
+    r2 = strsplit(x, split = "\\.X\\.")[[1]][2]
+    r2_num = as.numeric(sub("^.+_","", r2))
+    if (grepl("_cortical_", r2)) {
+      return(regionNames$roiName[r2_num])
+    } else
+      return(regionNames$roiName[r2_num + 48])
+  }
+))
+# full feature space:
+results_plsFC.allX = as.data.frame(
+  list("var" = names(pls_FC_fullData.allX$VIP[,1]),
+       "importance" = pls_FC_fullData.allX$VIP[,1])) %>% 
+  arrange(desc(abs(importance))) %>%
+  mutate_at("var", ~factor(., levels = rev(.)))
+# add region names
+results_plsFC.allX$region_1 = as.character(apply(results_plsFC.allX["var"], 1,
+  function(x) {
+    r1 = strsplit(x, split = "\\.X\\.")[[1]][1]
+    r1_num = as.numeric(sub("^.+_","", r1))
+    if (grepl("_cortical_", r1)) {
+      return(regionNames$roiName[r1_num])
+    } else
+      return(regionNames$roiName[r1_num + 48])
+  }
+))
+
+results_plsFC.allX$region_2 = as.character(apply(results_plsFC.allX["var"], 1,
+  function(x) {
+    r2 = strsplit(x, split = "\\.X\\.")[[1]][2]
+    r2_num = as.numeric(sub("^.+_","", r2))
+    if (grepl("_cortical_", r2)) {
+      return(regionNames$roiName[r2_num])
+    } else
+      return(regionNames$roiName[r2_num + 48])
+  }
+))
+
+
+results_plsFD.allX = as.data.frame(
+  list("var" = names(pls_FD_fullData.allX$VIP[,1]),
+       "importance" = pls_FD_fullData.allX$VIP[,1])) %>% 
+  arrange(desc(abs(importance))) %>%
+  mutate_at("var", ~factor(., levels = rev(.)))
+# add region names
+results_plsFD.allX$region_1 = as.character(apply(results_plsFD.allX["var"], 1,
+  function(x) {
+    r1 = strsplit(x, split = "\\.X\\.")[[1]][1]
+    r1_num = as.numeric(sub("^.+_","", r1))
+    if (grepl("_cortical_", r1)) {
+      return(regionNames$roiName[r1_num])
+    } else
+      return(regionNames$roiName[r1_num + 48])
+  }
+))
+
+results_plsFD.allX$region_2 = as.character(apply(results_plsFD.allX["var"], 1,
+  function(x) {
+    r2 = strsplit(x, split = "\\.X\\.")[[1]][2]
+    r2_num = as.numeric(sub("^.+_","", r2))
+    if (grepl("_cortical_", r2)) {
+      return(regionNames$roiName[r2_num])
+    } else
+      return(regionNames$roiName[r2_num + 48])
+  }
+))
+```
+
+# Visualize networks
+```{r}
+topVars_plsFC = results_plsFC[
+  results_plsFC$importance >= quantile(results_plsFC$importance,probs = .95),
+  c("region_1","region_2")]
+# Note, this may be more meaningful with say, the top 30 features.
+e_FC <- as.vector(t(as.matrix(topVars_plsFC)))
+g_FC <- igraph::graph(edges = e_FC, directed = FALSE)
+#
+e_FD <- as.vector(t(as.matrix(results_plsFD[,c("region_1","region_2")])))
+g_FD <- igraph::graph(edges = e_FD, directed = FALSE)
+#
+e_FC.allX <- as.vector(
+  t(as.matrix(results_plsFC.allX[,c("region_1","region_2")])))
+g_FC.allX <- igraph::graph(edges = e_FC.allX, directed = FALSE)
+#
+e_FD.allX <- as.vector(
+  t(as.matrix(results_plsFD.allX[,c("region_1","region_2")])))
+g_FD.allX <- igraph::graph(edges = e_FD.allX, directed = FALSE)
+plot(g_FC)
+```
+
+# add centrality measures to the data frames of results
+```{r}
+# alpha centrality is the measure of centrality controlling for 
+# "exogenous" factors, like being located in a highly dense community
+
+#region 1 alpha centralities
+results_plsFC$alph.cent_R1 = 
+  alpha.centrality(g_FC)[match(
+    results_plsFC$region_1,names(alpha.centrality(g_FC)))]
+results_plsFD$alph.cent_R1 = 
+  alpha.centrality(g_FD)[match(
+    results_plsFD$region_1,names(alpha.centrality(g_FD)))]
+results_plsFC.allX$alph.cent_R1 = 
+  alpha.centrality(g_FC.allX)[match(
+    results_plsFC.allX$region_1,names(alpha.centrality(g_FC.allX)))]
+results_plsFD.allX$alph.cent_R1 = 
+  alpha.centrality(g_FD.allX)[match(
+    results_plsFD.allX$region_1,names(alpha.centrality(g_FD.allX)))]
+#region 2 alpha centralities
+results_plsFC$alph.cent_R2 = 
+  alpha.centrality(g_FC)[match(
+    results_plsFC$region_2,names(alpha.centrality(g_FC)))]
+results_plsFD$alph.cent_R2 = 
+  alpha.centrality(g_FD)[match(
+    results_plsFD$region_2,names(alpha.centrality(g_FD)))]
+results_plsFC.allX$alph.cent_R2 = 
+  alpha.centrality(g_FC.allX)[match(
+    results_plsFC.allX$region_2,names(alpha.centrality(g_FC.allX)))]
+results_plsFD.allX$alph.cent_R2 = 
+  alpha.centrality(g_FD.allX)[match(
+    results_plsFD.allX$region_2,names(alpha.centrality(g_FD.allX)))]
+
+# Betweenness centrality corresponds to being at the center of many shortest
+# paths between communities and other nodes
+
+# betweenness centrality
+results_plsFC$btwn.cent_R1 = 
+  betweenness(g_FC)[match(
+    results_plsFC$region_1,names(betweenness(g_FC)))]
+results_plsFD$btwn.cent_R1 = 
+  betweenness(g_FD)[match(
+    results_plsFD$region_1,names(betweenness(g_FD)))]
+results_plsFC.allX$btwn.cent_R1 = 
+  betweenness(g_FC.allX)[match(
+    results_plsFC.allX$region_1,names(betweenness(g_FC.allX)))]
+results_plsFD.allX$btwn.cent_R1 = 
+  betweenness(g_FD.allX)[match(
+    results_plsFD.allX$region_1,names(betweenness(g_FD.allX)))]
+#region 2 alpha centralities
+results_plsFC$btwn.cent_R2 = 
+  betweenness(g_FC)[match(
+    results_plsFC$region_2,names(betweenness(g_FC)))]
+results_plsFD$btwn.cent_R2 = 
+  betweenness(g_FD)[match(
+    results_plsFD$region_2,names(betweenness(g_FD)))]
+results_plsFC.allX$btwn.cent_R2 = 
+  betweenness(g_FC.allX)[match(
+    results_plsFC.allX$region_2,names(betweenness(g_FC.allX)))]
+results_plsFD.allX$btwn.cent_R2 = 
+  betweenness(g_FD.allX)[match(
+    results_plsFD.allX$region_2,names(betweenness(g_FD.allX)))]
+```
+
+# Edge betweenness, to compare with PLS importance
+```{r}
+results_plsFC$edge.btwn.cent = edge_betweenness(g_FC) 
+results_plsFD$edge.btwn.cent = edge_betweenness(g_FD) 
+results_plsFC.allX$edge.btwn.cent = edge_betweenness(g_FC.allX) 
+results_plsFD.allX$edge.btwn.cent = edge_betweenness(g_FD.allX) 
+```
+
+
+### Models on all FC and FD features
+```{r}
+CorPLS.DA = lapply(sampleTrain(nrow(fCor), 10),
+  function(x) {
+    plsDA(
+      fCor[grep("\\.X\\.", names(fCor))], 
+      group = fCor$GROUP,
+      learn = x,
+      test = x[!x %in% 1:nrow(fCor)], 
+      autosel = TRUE
+    )
+  }
+)
+# FD:
+DissPLS.DA = lapply(sampleTrain(nrow(fDiss), 10),
+  function(x) {
+    plsDA(
+      fDiss[grep("\\.X\\.", names(fDiss))], 
+      group = fDiss$GROUP,
+      learn = x,
+      test = x[!x %in% 1:nrow(fDiss)], 
+      autosel = TRUE
+    )
+  }
+)
+```
+
+
+
+# Partial Least squares Discriminant Analysis
+```{r}
+# use cross validation to minimize test set error rate
+dissPLS.DA = plsDA(bestDissVars, group = y, 
+                 validation = "learntest",
+                 learn = c(1:length(y))[!c(1:length(y)) %in% testind], 
+                 test = testind,
+                 autosel = TRUE)
+corPLS.DA = plsDA(bestCorVars, group = y, 
+                 validation = "learntest", 
+                 learn = c(1:length(y))[!c(1:length(y)) %in% testind], 
+                 test = testind,
+                 autosel = TRUE)
+
+dissPLS.DA_5kCV = plsDA(bestDissVars, group = y,
+                        cv = "LKO", k = 5, # 5-fold CV
+                        autosel = TRUE)
+corPLS.DA_5kCV = plsDA(bestCorVars, group = y,
+                       cv = "LKO", k = 5, # 5-fold CV
+                       autosel = TRUE)
+
+vip.dissPLS_5k = as.data.frame(
+  list("var" = names(dissPLS.DA_5kCV$VIP[,1]),
+       "importance" = dissPLS.DA_5kCV$VIP[,1])) %>% 
+  arrange(desc(abs(importance))) %>%
+  mutate_at("var", ~factor(., levels = rev(.)))
+ggVarImp = ggplot(vip.dissPLS_5k) +
+  geom_bar(stat = "identity", aes(var, importance)) +
+  coord_flip()
+```
+
+#analyze regions
+```{r}
+regionNames = read.csv("../documentation/ho_key.csv", 
+                       stringsAsFactors = FALSE)
+vip.dissPLS_5k = vip.dissPLS_5k %>% select(var, importance) %>%
+  rowwise() %>%
+  mutate(region_1 = regionNames$roiName[
+    as.numeric(sub("^.+_","", 
+                   strsplit(as.character(var), 
+                            split = "\\.X\\.")[[1]][1]))],
+         region_2 = regionNames$roiName[
+           as.numeric(sub("^.+_","", 
+                          strsplit(as.character(var), 
+                                   split = "\\.X\\.")[[1]][2]))]
+  )
+
+#flatten out the matrix (BY ROW) into an edge list
+e <- as.vector(t(as.matrix(vip.dissPLS_5k[,c("region_1","region_2")])))
+ig <- igraph::graph(edges = e, directed = FALSE)
+E(ig)$weight <- vip.dissPLS_5k$importance
+#palette(heat.colors())
+plot(ig, edge.width = 5 + log(E(ig)$weight))
+```
+
 
 #QDA on raw connectivity data
 ```{r}
@@ -71,55 +480,6 @@ sortedCoefs %>%
 # Just the top 30:
 top30cor = rev(sigPredictors$Variable[order(sigPredictors$con.coef)])[1:30]
 top30diss = rev(sigPredictors$Variable[order(sigPredictors$dis.coef)])[1:30]
-```
-
-
-# Train-test splits
-```{r}
-bestCorVars = fcon[,names(fcon) %in% sigPredictors$Variable]
-bestCorPCA = prcomp(bestCorVars,scale. = TRUE, center = TRUE, retx = TRUE)$x
-bestDissVars = fdis[,names(fdis) %in% sigPredictors$Variable]
-bestDissPCA = prcomp(bestDissVars, scale. = TRUE, center = TRUE, retx = TRUE)$x
-
-testind = sample(1:149, replace = FALSE, size = round(149*.3,digits=0))
-
-bestCorVars.tr = bestCorVars[-testind,]; bestCorPCA.tr = bestCorPCA[-testind,]
-bestCorVars.te = bestCorVars[testind,]; bestCorPCA.te = bestCorPCA[testind,]
-bestDissVars.tr = bestDissVars[-testind,]; bestDissPCA.tr = bestDissPCA[-testind,]
-bestDissVars.te = bestDissVars[testind,]; bestDissPCA.te = bestDissPCA[testind,]
-
-y = factor(conlbls$GROUP, levels = c("COMP", "PI"))
-y.tr = y[-testind]; y.te = y[testind]
-```
-
-# Partial Least squares Discriminant Analysis
-```{r}
-# use cross validation to minimize test set error rate
-dissPLS.DA = plsDA(bestDissVars, group = y, 
-                 validation = "learntest",
-                 learn = c(1:length(y))[!c(1:length(y)) %in% testind], 
-                 test = testind,
-                 autosel = TRUE)
-corPLS.DA = plsDA(bestCorVars, group = y, 
-                 validation = "learntest", 
-                 learn = c(1:length(y))[!c(1:length(y)) %in% testind], 
-                 test = testind,
-                 autosel = TRUE)
-
-dissPLS.DA_5kCV = plsDA(bestDissVars, group = y,
-                        cv = "LKO", k = 5, # 5-fold CV
-                        autosel = TRUE)
-corPLS.DA_5kCV = plsDA(bestCorVars, group = y,
-                       cv = "LKO", k = 5, # 5-fold CV
-                       autosel = TRUE)
-vip.dissPLS_5k = as.data.frame(
-  list("var" = names(dissPLS.DA_5kCV$VIP[,1]),
-       "importance" = dissPLS.DA_5kCV$VIP[,1])) %>% 
-  arrange(desc(abs(importance))) %>%
-  mutate_at("var", ~factor(., levels = rev(.)))
-ggVarImp = ggplot(vip.dissPLS_5k) +
-  geom_bar(stat = "identity", aes(var, importance)) +
-  coord_flip()
 ```
 
 

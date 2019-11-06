@@ -30,7 +30,7 @@ pcRFcor.dat = na.omit(as.data.frame(cbind(corPCAlbl,cPCA$x)))
 pcRFdiss.dat = na.omit(as.data.frame(cbind(distPCAlbl,dPCA$x)))
 ```
     
-    Note, for the following analyses, we will use the PC solution called "cPCA" above, generated from the Pearson correlation features, because they were highly overlapping with the PCs generated from the features that were built on the Pearson Corrleation dissimilarity measure.
+    Note, for the following analyses, we will use the PC solution called "cPCA" above, generated from the Pearson correlation features, because they were highly overlapping with the PCs generated from the features that were built on the Pearson Correlation dissimilarity measure.
 
 # Predict age with the PCs
 ### Baseline solution with default hyperparameters on the correlation-based PCs
