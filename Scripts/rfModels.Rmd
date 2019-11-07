@@ -1,0 +1,292 @@
+---
+title: "rfModels"
+author: "Ian Douglas"
+date: "10/29/2019"
+output: html_document
+---
+
+# packages
+```{r}
+require(tidyverse)
+require(randomForest)
+```
+
+# load functional connectivity data (with labels) and its PCA
+# Also load the functional dissim. data (with lables) and its PCA
+```{r}
+fcon = readRDS('~/DANL/SB/data/processed/labelledFCor.rds')
+fdis = readRDS('~/DANL/SB/data/processed/labelledFDiss.rds')
+fdisBeta1 = readRDS('~/DANL/SB/data/processed/labelledFDissBeta1.rds')
+pc.fc = readRDS('~/DANL/SB/data/processed/fcPCASCoresLbl.rds')
+pc.fd = readRDS('~/DANL/SB/data/processed/fdPCASCoresLbl.rds')
+```
+
+# Baseline rf models
+```{r}
+data.list = list(fcon, fdis, fdisBeta1, pc.fc, pc.fd)
+rf.classify.mods = lapply(data.list, function(x) {
+  dat = select(x, -age) # the function won't run with ANY missings in the df
+  randomForest(as.factor(GROUP) ~ .-IDENT_SUBID, data = dat,
+               mtry = round(sqrt(ncol(x)-3)), ntree = 1000,
+               importance = TRUE)
+})
+# Additionally, using the classwt function:
+rf.classify.mods_classwt = lapply(data.list, function(x) {
+  dat = select(x, -age) # the function won't run with ANY missings in the df
+  comp.wt = sum(dat$GROUP == "COMP")/nrow(dat)
+  randomForest(as.factor(GROUP) ~ .-IDENT_SUBID, data = dat,
+               mtry = round(sqrt(ncol(x)-3)), ntree = 1000,
+               classwt = c("COMP" = comp.wt,"PI" = 1 - comp.wt))
+})
+# remove 4 subjects with NA in age column
+df.list_ageClean = lapply(data.list, na.omit)
+rf.age.mods = lapply(df.list_ageClean, function(x) {
+  randomForest(age ~ .-GROUP-IDENT_SUBID, data = x,
+               mtry = round(sqrt(ncol(x)-3)), ntree = 1000)
+})
+```
+
+# Predicting CBCL
+### Read in labels
+```{r}
+# format the labels to create a matching column for master data's "SUBJECTID_long"
+lblDataToPull$SUBJECTID_long = apply(lblDataToPull["folder_name"], 1, function(x) {
+  if (nchar(x) == 11) {
+    return(substr(x,1,5))
+  } else
+    return(substr(x,1, 9))
+})
+# (1) Merge in the subjectid_long to the actual data
+data.list = lapply(data.list, function(x) {
+  x = left_join(x, select(lblDataToPull, IDENT_SUBID, SUBJECTID_long), by = "IDENT_SUBID")
+  # (2) Merge in the CBCL from the master
+  cbcl_totprob_t = rep(NA, times = nrow(x))
+
+  for (i in seq_along(x$IDENT_SUBID)) {
+    cbcl.dat = monster_SB[grep(x$IDENT_SUBID[i], monster_SB$SUBJECTID_long),
+                          c("CBCL_4_TOTPROB_T", "CBCL_4_TOTPROB_T_FU1")]
+    if (nchar(x$SUBJECTID_long[i]) > 5 & any(!is.na(cbcl.dat$CBCL_4_TOTPROB_T_FU1))) {
+      cbcl_totprob_t[i] = na.omit(cbcl.dat$CBCL_4_TOTPROB_T_FU1)[1]
+    } else if (nchar(x$SUBJECTID_long[i]) > 5 & all(is.na(cbcl.dat$CBCL_4_TOTPROB_T_FU1))) {
+      cbcl_totprob_t[i] = na.omit(cbcl.dat$CBCL_4_TOTPROB_T)[1]
+    } else if (nchar(x$SUBJECTID_long[i]) == 5 & any(!is.na(cbcl.dat$CBCL_4_TOTPROB_T))) {
+      cbcl_totprob_t[i] = na.omit(cbcl.dat$CBCL_4_TOTPROB_T)[1]
+    } else
+      cbcl_totprob_t[i] = na.omit(cbcl.dat$CBCL_4_TOTPROB_T_FU1)[1]
+
+  }
+  x$CBCL_TOTPROB_T = cbcl_totprob_t
+ 
+  return(x)
+})
+```
+
+# cbcl rf mods
+```{r}
+rf.cbcl.mods = lapply(data.list, function(x) {
+  dat = na.omit(select(x, -age, -SUBJECTID_long, -GROUP))
+  mod = randomForest(CBCL_TOTPROB_T ~ .-IDENT_SUBID, 
+                     data = dat, mtry = round(sqrt(ncol(x)-2)),
+                     ntree = 1000)
+  return(mod)
+})
+```
+
+# Run the same models using the structural data and its PCA (with and without cranial volume)
+```{r}
+# First, raw structural data, with and without cranial volume
+lblStrData = readRDS("~/DANL/SB/data/processed/structuralLabelled.rds")
+lblStrData_noWBV = select(lblStrData,-EstimatedTotalIntraCranialVol)
+# Now PCA
+lblStrPCAScores = readRDS("~/DANL/SB/data/processed/strPCAscoresLabelled.rds")
+lblStrPCAScores_noWBV = readRDS("~/DANL/SB/data/processed/strPCAscoresLabelled_noWBV.rds")
+strData.list = list(lblStrData, lblStrData_noWBV, lblStrPCAScores, lblStrPCAScores_noWBV)
+# fit all random forest models
+rf.classify.mods_STR = lapply(strData.list, function(x) {
+  set.seed(111)
+  dat = na.omit(select(x, -one_of("SUBJECTID_long", "age", "wave_to_pull", "cbcl_totprob_t")))
+  mod = randomForest(as.factor(GROUP) ~.-IDENT_SUBID, data = dat,
+                     mtry = round(sqrt(ncol(dat)-2)),
+                     ntree = 1000, importance = TRUE)
+  return(mod)
+})
+# Another set of classification models using the classwt function as well
+rf.classify.mods_STR_classwt = lapply(strData.list, function(x) {
+  set.seed(111)
+  dat = na.omit(select(x, -one_of("SUBJECTID_long", "age", "wave_to_pull", "cbcl_totprob_t")))
+  comp.wt = sum(dat$GROUP == "COMP")/nrow(dat)
+  mod = randomForest(as.factor(GROUP) ~.-IDENT_SUBID, data = dat,
+                     mtry = round(sqrt(ncol(dat)-2)),
+                     ntree = 1000, importance = TRUE,
+                     classwt = c("COMP" = comp.wt, "PI" = 1 - comp.wt))
+  return(mod)
+})
+
+rf.age.mods_STR = lapply(strData.list, function(x) {
+  set.seed(111)
+  dat = na.omit(select(x, -one_of("SUBJECTID_long", "GROUP", "wave_to_pull", "cbcl_totprob_t")))
+  mod = randomForest(age ~.-IDENT_SUBID, data = dat,
+                     mtry = round(sqrt(ncol(dat)-2)),
+                     ntree = 1000, importance = TRUE)
+  return(mod)
+})
+rf.cbcl.mods_STR = lapply(strData.list, function(x) {
+  set.seed(111)
+  dat = na.omit(select(x, -one_of("SUBJECTID_long", "age", "wave_to_pull", "GROUP")))
+  COMP.wt = sum(dat$GROUP == "COMP")
+  mod = randomForest(cbcl_totprob_t ~.-IDENT_SUBID, data = dat,
+                     mtry = round(sqrt(ncol(dat)-2)),
+                     ntree = 1000, importance = TRUE)
+  return(mod)
+})
+
+lapply(Reduce("list", list(rf.classify.mods_STR, rf.age.mods_STR, rf.cbcl.mods_STR)), function(x) x)
+```
+
+-A final set of models using the first 7 and 6 PCs for the structural data with and without cranial vol respectively
+```{r}
+lblStrTopPCDims = lblStrPCAScores[
+  c(which(!grepl("^PC",names(lblStrPCAScores))),grep("^PC",names(lblStrPCAScores))[1:7])]
+lblStrTopPCDims_noWBV = lblStrPCAScores_noWBV[
+  c(which(!grepl("^PC",names(lblStrPCAScores_noWBV))),grep("^PC",names(lblStrPCAScores_noWBV))[1:6])]
+# Put data in a list
+strTopPC.list = list(lblStrTopPCDims, lblStrTopPCDims_noWBV)
+# Fit models
+rf.classify.mods.topPCA_STR = lapply(strTopPC.list, function(x) {
+  set.seed(111)
+  dat = na.omit(select(x, -one_of("SUBJECTID_long", "age", "cbcl_totprob_t")))
+  mod = randomForest(as.factor(GROUP) ~.-IDENT_SUBID, data = dat,
+                     mtry = 3,
+                     ntree = 1000, importance = TRUE)
+  return(mod)
+})
+rf.age.mods.topPCA_STR = lapply(strTopPC.list, function(x) {
+  set.seed(111)
+  dat = na.omit(select(x, -one_of("SUBJECTID_long", "GROUP", "cbcl_totprob_t")))
+  mod = randomForest(age ~.-IDENT_SUBID, data = dat,
+                     mtry = 3,
+                     ntree = 1000, importance = TRUE)
+  return(mod)
+})
+rf.cbcl.mods.topPCA_STR = lapply(strTopPC.list, function(x) {
+  set.seed(111)
+  dat = na.omit(select(x, -one_of("SUBJECTID_long", "age", "GROUP")))
+  mod = randomForest(cbcl_totprob_t ~.-IDENT_SUBID, data = dat,
+                     mtry = 3,
+                     ntree = 1000, importance = TRUE)
+  return(mod)
+})
+lapply(Reduce("list", list(rf.classify.mods.topPCA_STR,rf.age.mods.topPCA_STR,rf.cbcl.mods.topPCA_STR)),
+       function(x) x)
+```
+
+# one more model
+### The raw data model but with scaled data
+```{r}
+scaleStr.classify.mod = randomForest(as.factor(GROUP)~.-IDENT_SUBID,data = mutate_if(na.omit(select(strData.list[[1]], -one_of("SUBJECTID_long", "age", "wave_to_pull", "cbcl_totprob_t"))),is.numeric,scale), mtry = round(sqrt(ncol(mutate_if(na.omit(select(strData.list[[1]], -one_of("SUBJECTID_long", "age", "wave_to_pull", "cbcl_totprob_t"))),is.numeric,scale))-2)),ntree=1200,importance=TRUE)
+```
+
+#Visualize the network from the fcon data and classification model
+```{r}
+fcon.classify.imp = data.frame("var" = rownames(importance(rf.classify.mods[[1]])),
+                               as.data.frame(importance(rf.classify.mods[[1]]))) %>%
+  arrange(desc(MeanDecreaseAccuracy)) %>%
+  mutate(bestVar = MeanDecreaseAccuracy >= quantile(MeanDecreaseAccuracy, probs = .975))
+# add region names
+fcon.classify.imp$region_1 = as.character(apply(fcon.classify.imp["var"], 1,
+  function(x) {
+    r1 = strsplit(x, split = "\\.X\\.")[[1]][1]
+    r1_num = as.numeric(sub("^.+_","", r1))
+    if (grepl("_cortical_", r1)) {
+      return(regionNames$roiName[r1_num])
+    } else
+      return(regionNames$roiName[r1_num + 48])
+  }
+))
+fcon.classify.imp$region_2 = as.character(apply(fcon.classify.imp["var"], 1,
+  function(x) {
+    r2 = strsplit(x, split = "\\.X\\.")[[1]][2]
+    r2_num = as.numeric(sub("^.+_","", r2))
+    if (grepl("_cortical_", r2)) {
+      return(regionNames$roiName[r2_num])
+    } else
+      return(regionNames$roiName[r2_num + 48])
+  }
+))
+
+# prepare graph
+e_FC <- as.vector(
+  t(as.matrix(
+    fcon.classify.imp[fcon.classify.imp$bestVar, c("region_1","region_2")])
+  )
+)
+g_FC <- igraph::graph(edges = e_FC, directed = FALSE)
+plot(g_FC, vertex.label.cex = .2)
+```
+
+
+# Cross validation of models
+```{r}
+cv.classifyData = list(
+  fcon, pc.fc, lblStrData, lblStrData_noWBV, lblStrPCAScores, lblStrPCAScores_noWBV
+)
+# Repeated 10 fold CV of random forest models for classification trees
+rfCV.classify = function(data) {
+  dat = na.omit(select(data, -one_of("SUBJECTID_long", "age", "wave_to_pull", "cbcl_totprob_t")))
+  trains = NULL
+  for (i in 1:10) {
+    set.seed(i)
+    trains[[i]] = sample(1:nrow(dat), size = round(.7*nrow(dat)))
+  }
+  resultsList = lapply(trains, function(x) {
+    mod = randomForest(as.factor(GROUP) ~ .-IDENT_SUBID, data = dat[x, ],
+                       mtry = round(sqrt(ncol(dat[x, ])-3)), ntree = 1000,
+                       keep.forest = TRUE)
+    prediction = factor(predict(mod, newdata = dat[-x, ]), levels = c("COMP", "PI"))
+    actual = factor(dat[-x,]$GROUP, levels = c("COMP","PI"))
+    predictionAccuracy = confusionMatrix(prediction, actual)$overall["Accuracy"]
+    nullDist = sapply(1:1000, function(y) {
+      set.seed(y)
+      perm = factor(sample(dat[-x,]$GROUP), levels = c("COMP", "PI"))
+      confusionMatrix(prediction, perm)$overall["Accuracy"]
+      })
+    Lwr = quantile(nullDist, probs = .025)
+    Upr = quantile(nullDist, probs = .975);
+    return(as.data.frame(list("Accuracy"=predictionAccuracy, "lwr"=Lwr, "upr" = Upr)))
+    })
+  return(do.call("rbind", resultsList))
+}
+
+cv.rfClassify = lapply(cv.classifyData, rfCV.classify)
+```
+
+#### Compile results
+```{r}
+cvRes = do.call("rbind", lapply(cv.rfClassify, as.data.frame)) %>%
+  mutate(model = 
+           rep(c("fc", "fcPCA", "Structural", "Str_noWBV", "StrPCA", "StrPCA_noWBV"),
+               each = 10))
+```
+
+### plots
+```{r}
+# CV AVERAGE:
+cvRes %>% group_by(model) %>% summarize(
+  avg.Accuracy = mean(Accuracy),
+  avg.lwr = mean(lwr),
+  avg.upr = mean(upr)
+) %>%
+ggplot(.) +
+  geom_point(aes(x = model, y = avg.Accuracy), stat = "identity", size = 4) +
+  geom_errorbar(aes(x = model, ymin = avg.lwr, ymax = avg.upr), color = "red")
+```
+
+### Table of results
+```{r}
+cvRes %>% group_by(model) %>% summarize(
+  avg.Accuracy = mean(Accuracy),
+  avg.lwr = mean(lwr),
+  avg.upr = mean(upr)
+) %>% as.tibble()
+```
+

@@ -24,6 +24,7 @@ library(tidyverse)
 ```{r}
 fcon = readRDS('~/DANL/SB/data/processed/labelledFCor.rds')
 fdis = readRDS('~/DANL/SB/data/processed/labelledFDiss.rds')
+fdisBeta1 = readRDS('~/DANL/SB/data/processed/labelledFDissBeta1.rds')
 if (nrow(fcon) == nrow(fdis) & ncol(fcon) == ncol(fdis)) 
   {dim(list(fcon, fdis)[[sample(1:2,1)]])}
 ```
@@ -37,12 +38,16 @@ saveRDS(funcPCA, '../results/PCA/fcPCAobj.rds')
 fdPCA = prcomp(select(fdis, -age, -GROUP, -IDENT_SUBID), 
                  scale. = TRUE, center = TRUE, retx = TRUE)
 saveRDS(distPCA, '../results/PCA/fdPCAobj.rds')
-
+fdPCAbeta1 = prcomp(select(fdisBeta1, -age, -GROUP, -IDENT_SUBID),
+                    scale. = TRUE, center = TRUE, retx = TRUE)
+saveRDS(distPCA, '../results/PCA/fdPCAobj.rds')
 # Write out the labelled PC scores data frame
 fc.labelledPCA = cbind(select(fcon, IDENT_SUBID,GROUP,age), fcPCA$x)
 fd.labelledPCA = cbind(select(fdis, IDENT_SUBID,GROUP,age), fdPCA$x)
+fdBeta1.labelledPCA = cbind(select(fdisBeta1, IDENT_SUBID,GROUP,age), fdPCAbeta1$x)
 saveRDS(fc.labelledPCA,'~/DANL/SB/data/processed/fcPCASCoresLbl.rds')
 saveRDS(fd.labelledPCA,'~/DANL/SB/data/processed/fdPCASCoresLbl.rds')
+saveRDS(fdBeta1.labelledPCA,'~/DANL/SB/data/processed/fdBeta1PCASCoresLbl.rds')
 ```
 
 Explanation: the `fcPCA` is produced from a set of variables, for which each participant has one score for each pair of brain regions (combinations of size 2 of 69 different units) summing to 2346 variables. Each score is the Pearson correlation between the preprocessed time series of each brain region with that of each other brain region.
@@ -78,6 +83,13 @@ plot(1:length(distPCA$sdev), cumsum(distPCA$sdev^2/2346),
      ylim = c(0,1))
 abline(v = mean(c(tail(which(cumsum(distPCA$sdev^2/2346)<.8),1),
                   which(cumsum(distPCA$sdev^2/2346)>.8)[1])))
+plot(1:length(funcPCA$sdev), cumsum(funcPCA$sdev^2/2346),
+     ylab = '% Variance explained', 
+     xlab = '# of principal of components',
+     main = 'Method: PCA on Pearson correlations',
+     ylim = c(0,1))
+abline(v = mean(c(tail(which(cumsum(funcPCA$sdev^2/2346)<.8),1),
+                  which(cumsum(funcPCA$sdev^2/2346)>.8)[1])))
 ```
 
 To explain 80% of the variance, both methods required around 33 dimensions (far fewer than 2346).
