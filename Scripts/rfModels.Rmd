@@ -17,14 +17,20 @@ require(randomForest)
 fcon = readRDS('~/DANL/SB/data/processed/labelledFCor.rds')
 fdis = readRDS('~/DANL/SB/data/processed/labelledFDiss.rds')
 fdisBeta1 = readRDS('~/DANL/SB/data/processed/labelledFDissBeta1.rds')
+# read in PCA data
 pc.fc = readRDS('~/DANL/SB/data/processed/fcPCASCoresLbl.rds')
 pc.fd = readRDS('~/DANL/SB/data/processed/fdPCASCoresLbl.rds')
 pc.fdBeta1 = readRDS('~/DANL/SB/data/processed/fdBeta1PCASCoresLbl.rds')
+# note, each PCA required 35 dimensions to reach 80% variance explained.
+# Filter by that so that k is smaller than n (necessary because p was not smaller than n).
+topPC.fc = pc.fc[ , -c(grep("^PC36$", names(pc.fc)):ncol(pc.fc))]
+topPC.fd = pc.fd[ , -c(grep("^PC36$", names(pc.fd)):ncol(pc.fd))]
+topPC.fdBeta1 = pc.fdBeta1[ , -c(grep("^PC36$", names(pc.fdBeta1)):ncol(pc.fdBeta1))]
 ```
 
 # Baseline rf models
 ```{r}
-data.list = list(fcon, fdis, fdisBeta1, pc.fc, pc.fd, pc.fdBeta1)
+data.list = list(fcon, fdis, fdisBeta1, topPC.fc, topPC.fd, topPC.fdBeta1)
 rf.classify.mods = lapply(data.list, function(x) {
   dat = select(x, -age) # the function won't run with ANY missings in the df
   randomForest(as.factor(GROUP) ~ .-IDENT_SUBID, data = dat,
@@ -58,7 +64,7 @@ lblDataToPull$SUBJECTID_long = apply(lblDataToPull["folder_name"], 1, function(x
     return(substr(x,1, 9))
 })
 # (1) Merge in the subjectid_long to the actual data
-data.list = lapply(data.list, function(x) {
+data.list_cbcl = lapply(data.list, function(x) {
   x = left_join(x, select(lblDataToPull, IDENT_SUBID, SUBJECTID_long), by = "IDENT_SUBID")
   # (2) Merge in the CBCL from the master
   cbcl_totprob_t = rep(NA, times = nrow(x))
@@ -84,7 +90,7 @@ data.list = lapply(data.list, function(x) {
 
 # cbcl rf mods
 ```{r}
-rf.cbcl.mods = lapply(data.list, function(x) {
+rf.cbcl.mods = lapply(data.list_cbcl, function(x) {
   dat = na.omit(select(x, -age, -SUBJECTID_long, -GROUP))
   mod = randomForest(CBCL_TOTPROB_T ~ .-IDENT_SUBID, 
                      data = dat, mtry = round(sqrt(ncol(x)-2)),
