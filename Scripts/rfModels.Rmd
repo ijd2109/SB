@@ -19,11 +19,12 @@ fdis = readRDS('~/DANL/SB/data/processed/labelledFDiss.rds')
 fdisBeta1 = readRDS('~/DANL/SB/data/processed/labelledFDissBeta1.rds')
 pc.fc = readRDS('~/DANL/SB/data/processed/fcPCASCoresLbl.rds')
 pc.fd = readRDS('~/DANL/SB/data/processed/fdPCASCoresLbl.rds')
+pc.fdBeta1 = readRDS('~/DANL/SB/data/processed/fdBeta1PCASCoresLbl.rds')
 ```
 
 # Baseline rf models
 ```{r}
-data.list = list(fcon, fdis, fdisBeta1, pc.fc, pc.fd)
+data.list = list(fcon, fdis, fdisBeta1, pc.fc, pc.fd, pc.fdBeta1)
 rf.classify.mods = lapply(data.list, function(x) {
   dat = select(x, -age) # the function won't run with ANY missings in the df
   randomForest(as.factor(GROUP) ~ .-IDENT_SUBID, data = dat,
@@ -176,7 +177,12 @@ rf.cbcl.mods.topPCA_STR = lapply(strTopPC.list, function(x) {
                      ntree = 1000, importance = TRUE)
   return(mod)
 })
-lapply(Reduce("list", list(rf.classify.mods.topPCA_STR,rf.age.mods.topPCA_STR,rf.cbcl.mods.topPCA_STR)),
+
+#print all model output:
+lapply(Reduce("list", 
+              list(rf.classify.mods.topPCA_STR,
+                   rf.age.mods.topPCA_STR,
+                   rf.cbcl.mods.topPCA_STR)),
        function(x) x)
 ```
 
