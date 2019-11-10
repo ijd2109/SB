@@ -50,6 +50,15 @@ saveRDS(fd.labelledPCA,'~/DANL/SB/data/processed/fdPCASCoresLbl.rds')
 saveRDS(fdBeta1.labelledPCA,'~/DANL/SB/data/processed/fdBeta1PCASCoresLbl.rds')
 ```
 
+# The number of dimensions to reach 80% variance explained:
+```{r}
+as.matrix(as.data.frame(list("PC"=1:149,
+                             "fdBeta1"=cumsum(fdPCAbeta1$sdev^2/2346),
+                             "fd"=cumsum(fdPCA$sdev^2/2346),
+                             "fc"=cumsum(fdPCA$sdev^2/2346))))
+```
+
+
 Explanation: the `fcPCA` is produced from a set of variables, for which each participant has one score for each pair of brain regions (combinations of size 2 of 69 different units) summing to 2346 variables. Each score is the Pearson correlation between the preprocessed time series of each brain region with that of each other brain region.
 
 The `fdPCA` object is derived from the same process, except that instead of computing the correlation between each time series, a measure of the dissimilarity between the two time series is calculated which is based on pearson correlation. For this reason the results are expected to be similar.

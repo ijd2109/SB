@@ -2,7 +2,17 @@
 title: "rfModels"
 author: "Ian Douglas"
 date: "10/29/2019"
-output: html_document
+output:
+  html_document:
+    number_sections: yes
+    toc: yes
+    df_print: paged
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+  pdf_document:
+    toc: yes
+    df_print: paged
 ---
 
 # packages
@@ -237,68 +247,5 @@ plot(g_FC, vertex.label.cex = .2)
 ```
 
 
-# Cross validation of models
-```{r}
-cv.classifyData = list(
-  fcon, pc.fc, lblStrData, lblStrData_noWBV, lblStrPCAScores, lblStrPCAScores_noWBV
-)
-# Repeated 10 fold CV of random forest models for classification trees
-rfCV.classify = function(data) {
-  dat = na.omit(select(data, -one_of("SUBJECTID_long", "age", "wave_to_pull", "cbcl_totprob_t")))
-  trains = NULL
-  for (i in 1:10) {
-    set.seed(i)
-    trains[[i]] = sample(1:nrow(dat), size = round(.7*nrow(dat)))
-  }
-  resultsList = lapply(trains, function(x) {
-    mod = randomForest(as.factor(GROUP) ~ .-IDENT_SUBID, data = dat[x, ],
-                       mtry = round(sqrt(ncol(dat[x, ])-3)), ntree = 1000,
-                       keep.forest = TRUE)
-    prediction = factor(predict(mod, newdata = dat[-x, ]), levels = c("COMP", "PI"))
-    actual = factor(dat[-x,]$GROUP, levels = c("COMP","PI"))
-    predictionAccuracy = confusionMatrix(prediction, actual)$overall["Accuracy"]
-    nullDist = sapply(1:1000, function(y) {
-      set.seed(y)
-      perm = factor(sample(dat[-x,]$GROUP), levels = c("COMP", "PI"))
-      confusionMatrix(prediction, perm)$overall["Accuracy"]
-      })
-    Lwr = quantile(nullDist, probs = .025)
-    Upr = quantile(nullDist, probs = .975);
-    return(as.data.frame(list("Accuracy"=predictionAccuracy, "lwr"=Lwr, "upr" = Upr)))
-    })
-  return(do.call("rbind", resultsList))
-}
 
-cv.rfClassify = lapply(cv.classifyData, rfCV.classify)
-```
-
-#### Compile results
-```{r}
-cvRes = do.call("rbind", lapply(cv.rfClassify, as.data.frame)) %>%
-  mutate(model = 
-           rep(c("fc", "fcPCA", "Structural", "Str_noWBV", "StrPCA", "StrPCA_noWBV"),
-               each = 10))
-```
-
-### plots
-```{r}
-# CV AVERAGE:
-cvRes %>% group_by(model) %>% summarize(
-  avg.Accuracy = mean(Accuracy),
-  avg.lwr = mean(lwr),
-  avg.upr = mean(upr)
-) %>%
-ggplot(.) +
-  geom_point(aes(x = model, y = avg.Accuracy), stat = "identity", size = 4) +
-  geom_errorbar(aes(x = model, ymin = avg.lwr, ymax = avg.upr), color = "red")
-```
-
-### Table of results
-```{r}
-cvRes %>% group_by(model) %>% summarize(
-  avg.Accuracy = mean(Accuracy),
-  avg.lwr = mean(lwr),
-  avg.upr = mean(upr)
-) %>% as.tibble()
-```
 

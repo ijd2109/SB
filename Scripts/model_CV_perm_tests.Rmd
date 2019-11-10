@@ -1,0 +1,115 @@
+---
+title: "model_CV_perm_tests"
+author: "Ian Douglas"
+date: "11/9/2019"
+output:
+  html_document:
+    number_sections: yes
+    toc: yes
+    df_print: paged
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+  pdf_document:
+    toc: yes
+    df_print: paged
+---
+
+```{r}
+require(tidyverse)
+require(randomForest)
+require(caret) # for confusioMatrix()
+```
+
+# Cross validation of models, and permutation testing for model accuracy metrics
+
+## Get datasets on which models will be fit into a list:
+```{r}
+data_list = list(
+  fcon, fdisBeta1, pc.fc, pc.fdBeta1, lblStrData_noWBV, lblStrPCAScores_noWBV
+)
+```
+
+## Prepare function to automate model building, cross validation, and permutation testing.
+```{r}
+# Repeated 10 fold CV of random forest models for classification trees
+RFclassify_CVperm = function(data) {
+  # pre-process the data identically for each dataset
+  rownames(data) = data$IDENT_SUBID
+  dat = na.omit(
+    data %>% 
+      select(-one_of("IDENT_SUBID","SUBJECTID_long", "age", "wave_to_pull", "cbcl_totprob_t"))
+  )
+  
+  # Produce 1000 unique train-test splits using a new randomization seed each time:
+  tests = lapply(1:1000, function(x) {
+    set.seed(x)
+    # Require that the test set is 50%-50% of each group
+    PI.indices = which(dat$GROUP == "PI"); COMP.indices = which(dat$GROUP == "COMP")
+    return(sample(1:nrow(dat), size = round(.7*nrow(dat))))
+  }) # the result is a list of 1000 unique vectors with training set indices.
+  
+  # For each of the 1000 train-test split:
+  ### (1) fit one random forest (1000 trees) model to the training set
+  ### (2) Compute one prediction accuracy on its corresponding testing set.
+  ### (3) 1000 times: 
+  ####### (3a): Randomly permute the labels of the test set
+  ####### (3b): Recompute prediction accuracy from the model fit in step 1.
+  ### (4) Compute the two-tailed 95% confidence interval for the accuracy from step 2.
+  resultsList = lapply(trains, function(x) {
+    # 1. fit the model:
+    mod = randomForest(as.factor(GROUP) ~ ., 
+                       # supply the pre-processed data and the training indices
+                       data = dat[x, ],
+                       mtry = round(sqrt(ncol(dat[x, ])-3)), ntree = 1000,
+                       keep.forest = TRUE)
+    # Get the model's predictions for the testing set:
+    # Format them as factors with all levels in case random sample 
+    prediction = factor(predict(mod, newdata = dat[-x, ]), levels = c("COMP", "PI"))
+    
+    actual = factor(dat[-x,]$GROUP, levels = c("COMP","PI"))
+    predictionAccuracy = confusionMatrix(prediction, actual)$overall["Accuracy"]
+    nullDist = sapply(1:1000, function(y) {
+      set.seed(y)
+      perm = factor(sample(dat[-x,]$GROUP), levels = c("COMP", "PI"))
+      confusionMatrix(prediction, perm)$overall["Accuracy"]
+      })
+    Lwr = quantile(nullDist, probs = .025)
+    Upr = quantile(nullDist, probs = .975);
+    return(as.data.frame(list("Accuracy"=predictionAccuracy, "lwr"=Lwr, "upr" = Upr)))
+    })
+  return(do.call("rbind", resultsList))
+}
+
+cv.rfClassify = lapply(cv.classifyData, rfCV.classify)
+```
+
+#### Compile results
+```{r}
+cvRes = do.call("rbind", lapply(cv.rfClassify, as.data.frame)) %>%
+  mutate(model = 
+           rep(c("fc", "fcPCA", "Structural", "Str_noWBV", "StrPCA", "StrPCA_noWBV"),
+               each = 10))
+```
+
+### plots
+```{r}
+# CV AVERAGE:
+cvRes %>% group_by(model) %>% summarize(
+  avg.Accuracy = mean(Accuracy),
+  avg.lwr = mean(lwr),
+  avg.upr = mean(upr)
+) %>%
+ggplot(.) +
+  geom_point(aes(x = model, y = avg.Accuracy), stat = "identity", size = 4) +
+  geom_errorbar(aes(x = model, ymin = avg.lwr, ymax = avg.upr), color = "red")
+```
+
+### Table of results
+```{r}
+cvRes %>% group_by(model) %>% summarize(
+  avg.Accuracy = mean(Accuracy),
+  avg.lwr = mean(lwr),
+  avg.upr = mean(upr)
+) %>% as.tibble()
+```
