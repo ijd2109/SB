@@ -14,24 +14,23 @@ output:
     toc: yes
     df_print: paged
 ---
-
-```{r}
+# Cross validation of models, and permutation testing for model accuracy metrics
+```{r, echo=FALSE, include=FALSE}
 require(tidyverse)
 require(randomForest)
 require(caret) # for confusioMatrix()
+require(beepr) # for beep_on_error; couldbe replaced with `testthat`
 ```
 
-# Cross validation of models, and permutation testing for model accuracy metrics
-
 ## Get datasets on which models will be fit into a list:
-```{r}
+```{r, eval=FALSE}
 data_list = list(
-  fcon, fdisBeta1, pc.fc, pc.fdBeta1, lblStrData_noWBV, lblStrPCAScores_noWBV
+  fcon, fdisBeta1, topPC.fc, topPC.fdBeta1, lblStrData_noWBV, lblStrPCAScores_noWBV
 )
 ```
 
 ## Prepare function to automate model building, cross validation, and permutation testing.
-```{r}
+```{r, eval=FALSE}
 # Repeated 10 fold CV of random forest models for classification trees
 RFclassify_CVperm = function(data) {
   # pre-process the data identically for each dataset
@@ -42,11 +41,15 @@ RFclassify_CVperm = function(data) {
   )
   
   # Produce 1000 unique train-test splits using a new randomization seed each time:
-  tests = lapply(1:1000, function(x) {
+  trains = lapply(1:1000, function(x) {
     set.seed(x)
     # Require that the test set is 50%-50% of each group
     PI.indices = which(dat$GROUP == "PI"); COMP.indices = which(dat$GROUP == "COMP")
-    return(sample(1:nrow(dat), size = round(.7*nrow(dat))))
+    train.size = round(.7*length(PI.indices))
+    # sample indices into a training set:
+    train = sample(c(sample(PI.indices,size = train.size), 
+                     sample(COMP.indices, size = train.size)))
+    return(train)
   }) # the result is a list of 1000 unique vectors with training set indices.
   
   # For each of the 1000 train-test split:
@@ -56,60 +59,112 @@ RFclassify_CVperm = function(data) {
   ####### (3a): Randomly permute the labels of the test set
   ####### (3b): Recompute prediction accuracy from the model fit in step 1.
   ### (4) Compute the two-tailed 95% confidence interval for the accuracy from step 2.
-  resultsList = lapply(trains, function(x) {
+  resultsList = lapply(trains, function(y) {
     # 1. fit the model:
     mod = randomForest(as.factor(GROUP) ~ ., 
                        # supply the pre-processed data and the training indices
-                       data = dat[x, ],
-                       mtry = round(sqrt(ncol(dat[x, ])-3)), ntree = 1000,
+                       data = dat[y, ],
+                       # set mtry to sqrt(p), where p is the number of predictors
+                       mtry = round(sqrt(ncol(dat[y, ])-1)), ntree = 1000,
                        keep.forest = TRUE)
     # Get the model's predictions for the testing set:
     # Format them as factors with all levels in case random sample 
-    prediction = factor(predict(mod, newdata = dat[-x, ]), levels = c("COMP", "PI"))
-    
-    actual = factor(dat[-x,]$GROUP, levels = c("COMP","PI"))
+    prediction = factor(predict(mod, newdata = dat[-y, ]), levels = c("COMP", "PI"))
+    actual = factor(dat[-y,]$GROUP, levels = c("COMP","PI"))
+    # Get the point estimate of the prediction accuracy for this train-test split:
     predictionAccuracy = confusionMatrix(prediction, actual)$overall["Accuracy"]
-    nullDist = sapply(1:1000, function(y) {
-      set.seed(y)
-      perm = factor(sample(dat[-x,]$GROUP), levels = c("COMP", "PI"))
-      confusionMatrix(prediction, perm)$overall["Accuracy"]
-      })
-    Lwr = quantile(nullDist, probs = .025)
-    Upr = quantile(nullDist, probs = .975);
-    return(as.data.frame(list("Accuracy"=predictionAccuracy, "lwr"=Lwr, "upr" = Upr)))
+    
+    # Now, Generate the null distribution for the above prediction accuracy:
+    ### (1): Set a unique seed and randomly shuffle the testing set's group labels
+    ### (2): Recalculate the prediction accuracy using the real predictions
+    nullDist = sapply(1000:1, function(z) {
+      set.seed(z)
+      perm = sample(actual)
+      return(confusionMatrix(prediction, perm)$overall["Accuracy"])
     })
-  return(do.call("rbind", resultsList))
+    # nullDist is now a vector (length 1000) containing the empirical distribution of accuracies
+    
+    
+    # Store the train-test accuracy from above, and its respective null distribution:
+    out = list("accuracy" = predictionAccuracy, "nd" = nullDist)
+    return(out)
+  }) # resultsList is now a list with 1000 sublists
+  
+  # To return the resultsList, check that:
+  # (1) resultsList has 1000 elements (sublists)
+  # (2) The sublists of resultsList have two elements
+  # (3) Those elements are a single accuracy, and the 1000-length vector with the null values
+  if (length(resultsList) == 1000 & 
+      all(sapply(resultsList, length) == 2) &
+      all(sapply(resultsList, function(a) sapply(a, length)) == c(1, 1000))) {
+    
+    # Then return the results corresponding to each dataset passed to RFclassify_CVperm()
+    return(resultsList)
+  } else break
 }
-
-cv.rfClassify = lapply(cv.classifyData, rfCV.classify)
 ```
 
-#### Compile results
+
+## Implement the function
+```{r, eval=FALSE}
+# Run it on each dataset in the list established above
+beepr::beep_on_error(cvPerm.rfClassifyResults <- lapply(data_list, RFclassify_CVperm), 2)
+```
+
+### Compile results
+```{r, eval=FALSE}
+Accuracies = lapply(cvPerm.rfClassifyResults,function(x) {
+  sapply(x, function(y) {
+    y$accuracy
+  })
+})
+#saveRDS(Accuracies, "../results/permutations/testSetAccuricies.rds")
+averageNullDist = lapply(cvPerm.rfClassifyResults,function(x) {
+  nullMatrix = lapply(x, function(y) {
+    sort(y$nd)
+  })
+  apply(Reduce("cbind", nullMatrix), 1, mean)
+})
+#saveRDS(averageNullDist, "../results/permutations/permutedAvgNullDist.rds")
+# Average accuracy compared to average nullDist
+perm.pval = lapply(1:6, function(x) {
+  # comparing the mean of all 1000 test-set accuracies to the mean (sorted) null distribution
+  (1 + sum(averageNullDist[[x]] > mean(Accuracies[[x]])))/(1 + length(averageNullDist[[x]]))
+})
+#saveRDS(perm.pval, "../results/permutations/permutation_p.values.rds")
+```
+
+### Further compile results for plotting
+```{r, eval=TRUE, include=FALSE,echo=FALSE}
+perm.pval = readRDS("../results/permutations/permutation_p.values.rds")
+averageNullDist = readRDS("../results/permutations/permutedAvgNullDist.rds")
+Accuracies = readRDS("../results/permutations/testSetAccuricies.rds")
+
+dataNames = c("FC","FD","FC.PCA","FD.PCA","Str","Str.PCA")
+dataType = c(rep(c("connectivity", "dissimilarity"),2), rep("structural",2))
+perm_plt_data = Reduce("rbind", lapply(1:6, function(x) {
+  data.frame("model" = rep(dataNames[x], times= 2000),
+             "dataType" = rep(dataType[x], times = 2000),
+             "Distribution" = rep(c("Test.Set.Repetitions", "Permuted.Null"), each = 1000),
+             "Accuracy" = c(Accuracies[[x]], averageNullDist[[x]]),
+             stringsAsFactors = FALSE)
+}))
+#saveRDS(perm_plt_data, "../results/permutations/permResults4plotting.rds")
+```
+
+```{r, include=FALSE, eval=TRUE, echo=FALSE}
+perm_plt_data = readRDS("../results/permutations/permResults4plotting.rds")
+```
+
+
+## Visualize results
 ```{r}
-cvRes = do.call("rbind", lapply(cv.rfClassify, as.data.frame)) %>%
-  mutate(model = 
-           rep(c("fc", "fcPCA", "Structural", "Str_noWBV", "StrPCA", "StrPCA_noWBV"),
-               each = 10))
+ggplot(perm_plt_data, aes(Accuracy, fill = Distribution)) +
+    geom_density(alpha = .3) +
+    geom_vline( # calculate the means
+        data = data.frame("model"=dataNames,"avg" = sapply(Accuracies, mean)),
+        aes(xintercept = avg)) +
+    facet_grid(~model) + 
+  theme(panel.background = element_rect(fill="white"))
 ```
 
-### plots
-```{r}
-# CV AVERAGE:
-cvRes %>% group_by(model) %>% summarize(
-  avg.Accuracy = mean(Accuracy),
-  avg.lwr = mean(lwr),
-  avg.upr = mean(upr)
-) %>%
-ggplot(.) +
-  geom_point(aes(x = model, y = avg.Accuracy), stat = "identity", size = 4) +
-  geom_errorbar(aes(x = model, ymin = avg.lwr, ymax = avg.upr), color = "red")
-```
-
-### Table of results
-```{r}
-cvRes %>% group_by(model) %>% summarize(
-  avg.Accuracy = mean(Accuracy),
-  avg.lwr = mean(lwr),
-  avg.upr = mean(upr)
-) %>% as.tibble()
-```
