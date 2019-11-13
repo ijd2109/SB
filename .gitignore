@@ -1,0 +1,21 @@
+.DS_Store
+
+# History files
+.Rhistory
+.Rapp.history
+# Session Data files
+.RData
+# project
+.Rproj
+# RStudio files
+.Rproj.user/
+
+# data and docs
+SB/data
+SB/documentation
+SB/meeting\ notes
+wave1labels.rds
+SB/output
+
+#manuscript
+SB/manuscript
