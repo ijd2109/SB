@@ -274,8 +274,9 @@ require(beepr) # for beep_on_error; could be replaced with a `testthat` function
   fcon, fdisBeta1, topPC.fc, topPC.fdBeta1, lblStrData_noWBV, lblStrPCAScores_noWBV
 )</code></pre>
 </div>
-<div id="prepare-function-to-automate-model-building-cross-validation-and-permutation-testing." class="section level2">
-<h2><span class="header-section-number">1.2</span> Prepare function to automate model building, cross validation, and permutation testing.</h2>
+</div>
+<div id="prepare-function-to-automate-model-building-cross-validation-and-permutation-testing." class="section level1">
+<h1><span class="header-section-number">2</span> Prepare function to automate model building, cross validation, and permutation testing.</h1>
 <pre class="r"><code># Repeated 10 fold CV of random forest models for classification trees
 RFclassify_CVperm = function(data) {
   # pre-process the data identically for each dataset
@@ -348,13 +349,13 @@ RFclassify_CVperm = function(data) {
     return(resultsList)
   } else break
 }</code></pre>
-</div>
 <div id="implement-the-function" class="section level2">
-<h2><span class="header-section-number">1.3</span> Implement the function</h2>
+<h2><span class="header-section-number">2.1</span> Implement the function</h2>
 <pre class="r"><code># Run it on each dataset in the list established above
 beepr::beep_on_error(cvPerm.rfClassifyResults &lt;- lapply(data_list, RFclassify_CVperm), 2)</code></pre>
-<div id="compile-results" class="section level3">
-<h3><span class="header-section-number">1.3.1</span> Compile results:</h3>
+</div>
+<div id="compile-results" class="section level2">
+<h2><span class="header-section-number">2.2</span> Compile results:</h2>
 <pre class="r"><code>## Accuracies
 Accuracies = lapply(cvPerm.rfClassifyResults,function(x) {
   sapply(x, function(y) {
@@ -376,8 +377,8 @@ perm.pval = lapply(1:6, function(x) {
   (1 + sum(averageNullDist[[x]] &gt; mean(Accuracies[[x]])))/(1 + length(averageNullDist[[x]]))
 })</code></pre>
 </div>
-<div id="view-the-results" class="section level3">
-<h3><span class="header-section-number">1.3.2</span> View the Results:</h3>
+<div id="view-the-results" class="section level2">
+<h2><span class="header-section-number">2.3</span> View the Results:</h2>
 <pre class="r"><code>as.data.frame(list(&quot;data&quot; = c(&quot;FC&quot;,&quot;FD&quot;,&quot;FC.PCA&quot;,&quot;FD.PCA&quot;,&quot;Str&quot;,&quot;Str.PCA&quot;),
                    &quot;CV_Avg_Acc.&quot; = sapply(Accuracies, mean),
                    &quot;CV_Acc_SD&quot; = sapply(Accuracies, sd),
@@ -390,8 +391,11 @@ perm.pval = lapply(1:6, function(x) {
   </script>
 </div>
 </div>
-<div id="compile-results-into-dataframes-for-plotting" class="section level3">
-<h3><span class="header-section-number">1.3.3</span> Compile results into dataframes for plotting</h3>
+</div>
+<div id="visualize-the-results" class="section level1">
+<h1><span class="header-section-number">3</span> Visualize the results</h1>
+<div id="compile-results-into-dataframes-for-plotting" class="section level2">
+<h2><span class="header-section-number">3.1</span> Compile results into dataframes for plotting</h2>
 <pre class="r"><code>## Add some labels and convert from wide to long format to plot distributions
 dataNames = c(&quot;FC&quot;,&quot;FD&quot;,&quot;FC.PCA&quot;,&quot;FD.PCA&quot;,&quot;Str&quot;,&quot;Str.PCA&quot;)
 dataType = c(rep(c(&quot;connectivity&quot;, &quot;dissimilarity&quot;),2), rep(&quot;structural&quot;,2))
@@ -409,9 +413,8 @@ fMRI_plt_data = perm_plt_data %&gt;%
 StrMRI_plt_data = perm_plt_data %&gt;% 
   filter(dataType == &quot;structural&quot;)</code></pre>
 </div>
-</div>
-<div id="visualize-results" class="section level2">
-<h2><span class="header-section-number">1.4</span> Visualize results</h2>
+<div id="generate-plots" class="section level2">
+<h2><span class="header-section-number">3.2</span> Generate plots</h2>
 <pre class="r"><code>fMRI_plt = ggplot(fMRI_plt_data, aes(Accuracy, fill = Distribution)) +
   geom_density(alpha = .3) +
   geom_vline( # calculate the means

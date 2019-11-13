@@ -30,7 +30,7 @@ data_list = list(
 )
 ```
 
-## Prepare function to automate model building, cross validation, and permutation testing.
+# Prepare function to automate model building, cross validation, and permutation testing.
 ```{r, eval=FALSE}
 # Repeated 10 fold CV of random forest models for classification trees
 RFclassify_CVperm = function(data) {
@@ -112,7 +112,7 @@ RFclassify_CVperm = function(data) {
 beepr::beep_on_error(cvPerm.rfClassifyResults <- lapply(data_list, RFclassify_CVperm), 2)
 ```
 
-### Compile results:
+## Compile results:
 ```{r, eval=FALSE}
 ## Accuracies
 Accuracies = lapply(cvPerm.rfClassifyResults,function(x) {
@@ -142,7 +142,7 @@ averageNullDist = readRDS("../../output/permutations/permutedAvgNullDist.rds")
 Accuracies = readRDS("../../output/permutations/testSetAccuricies.rds")
 ```
 
-### View the Results:
+## View the Results:
 ```{r}
 as.data.frame(list("data" = c("FC","FD","FC.PCA","FD.PCA","Str","Str.PCA"),
                    "CV_Avg_Acc." = sapply(Accuracies, mean),
@@ -158,7 +158,8 @@ saveRDS(averageNullDist, "../../output/permutations/permutedAvgNullDist.rds")
 saveRDS(perm.pval, "../../output/permutations/permutation_p.values.rds")
 ```
 
-### Compile results into dataframes for plotting
+# Visualize the results
+## Compile results into dataframes for plotting
 ```{r}
 ## Add some labels and convert from wide to long format to plot distributions
 dataNames = c("FC","FD","FC.PCA","FD.PCA","Str","Str.PCA")
@@ -190,7 +191,7 @@ fMRI_plt_data = readRDS("../../output/permutations/FMRIpermResults4plotting.rds"
 StrMRI_plt_data = readRDS("../../output/permutations/STRMRIpermResults4plotting.rds")
 ```
 
-## Visualize results
+## Generate plots
 ```{r}
 fMRI_plt = ggplot(fMRI_plt_data, aes(Accuracy, fill = Distribution)) +
   geom_density(alpha = .3) +
