@@ -1,0 +1,11 @@
+# ds_store
+.DS_Store
+# RStudio files
+.Rproj.user/
+# r project
+.Rproj
+# manuscript
+SB/manuscript/
+# output:
+SB/output
+SB/wave1labels.rds
