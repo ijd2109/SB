@@ -15,11 +15,12 @@ output:
     df_print: paged
 ---
 # Cross validation of models, and permutation testing for model accuracy metrics
-```{r, echo=FALSE, message=FALSE, results='hide'}
+
+```{r, echo=TRUE, message=FALSE, results='hide'}
 require(tidyverse)
 require(randomForest)
 require(caret) # for confusioMatrix()
-require(beepr) # for beep_on_error; couldbe replaced with `testthat`
+require(beepr) # for beep_on_error; could be replaced with a `testthat` function
 ```
 
 ## Put datasets on which models will be fit into a list:
@@ -67,6 +68,7 @@ RFclassify_CVperm = function(data) {
                        # set mtry to sqrt(p), where p is the number of predictors
                        mtry = round(sqrt(ncol(dat[y, ])-1)), ntree = 1000,
                        keep.forest = TRUE)
+    # Fitting complete.
     # Get the model's predictions for the testing set:
     # Format them as factors with all levels in case random sample 
     prediction = factor(predict(mod, newdata = dat[-y, ]), levels = c("COMP", "PI"))
@@ -104,44 +106,60 @@ RFclassify_CVperm = function(data) {
 }
 ```
 
-
 ## Implement the function
 ```{r, eval=FALSE}
 # Run it on each dataset in the list established above
 beepr::beep_on_error(cvPerm.rfClassifyResults <- lapply(data_list, RFclassify_CVperm), 2)
 ```
 
-
-```{r, eval=FALSE, echo=FALSE}
-## Compile results
+### Compile results:
+```{r, eval=FALSE}
+## Accuracies
 Accuracies = lapply(cvPerm.rfClassifyResults,function(x) {
   sapply(x, function(y) {
     y$accuracy
   })
 })
-#saveRDS(Accuracies, "../results/permutations/testSetAccuricies.rds")
+
+# Aggregate null distribution
 averageNullDist = lapply(cvPerm.rfClassifyResults,function(x) {
   nullMatrix = lapply(x, function(y) {
     sort(y$nd)
   })
   apply(Reduce("cbind", nullMatrix), 1, mean)
 })
-#saveRDS(averageNullDist, "../results/permutations/permutedAvgNullDist.rds")
-# Average accuracy compared to average nullDist
+
+# Permutation p-value (100% - percent of permuted values closer to chance than the observed)/100
 perm.pval = lapply(1:6, function(x) {
   # comparing the mean of all 1000 test-set accuracies to the mean (sorted) null distribution
   (1 + sum(averageNullDist[[x]] > mean(Accuracies[[x]])))/(1 + length(averageNullDist[[x]]))
 })
-#saveRDS(perm.pval, "../results/permutations/permutation_p.values.rds")
+```
+```{r, eval=TRUE, echo=FALSE}
+### Further compile results for plotting
+perm.pval = readRDS("../../output/permutations/permutation_p.values.rds")
+averageNullDist = readRDS("../../output/permutations/permutedAvgNullDist.rds")
+Accuracies = readRDS("../../output/permutations/testSetAccuricies.rds")
 ```
 
+### View the Results:
+```{r}
+as.data.frame(list("Cross-Val_Mean_Accuracy" = sapply(Accuracies, mean),
+                   "Cross-Val_Acc_SD" = sapply(Accuracies, sd),
+                   "Null_Mean_Acc." = sapply(averageNullDist, mean),
+                   "Null_Acc_SD" = sapply(averageNullDist, sd),
+                   "p-value" = perm.pval))
+```
 
-```{r, eval=TRUE, include=FALSE,echo=FALSE}
-### Further compile results for plotting
-perm.pval = readRDS("../results/permutations/permutation_p.values.rds")
-averageNullDist = readRDS("../results/permutations/permutedAvgNullDist.rds")
-Accuracies = readRDS("../results/permutations/testSetAccuricies.rds")
+```{r, echo=FALSE, eval=FALSE}
+saveRDS(Accuracies, "../../output/permutations/testSetAccuricies.rds")
+saveRDS(averageNullDist, "../../output/permutations/permutedAvgNullDist.rds")
+saveRDS(perm.pval, "../../output/permutations/permutation_p.values.rds")
+```
 
+### Compile results into dataframes for plotting
+```{r}
+## Add some labels and convert from wide to long format to plot distributions
 dataNames = c("FC","FD","FC.PCA","FD.PCA","Str","Str.PCA")
 dataType = c(rep(c("connectivity", "dissimilarity"),2), rep("structural",2))
 perm_plt_data = Reduce("rbind", lapply(1:6, function(x) {
@@ -151,22 +169,67 @@ perm_plt_data = Reduce("rbind", lapply(1:6, function(x) {
              "Accuracy" = c(Accuracies[[x]], averageNullDist[[x]]),
              stringsAsFactors = FALSE)
 }))
-#saveRDS(perm_plt_data, "../results/permutations/permResults4plotting.rds")
+
+# seprate functional and structural data for plotting
+fMRI_plt_data = perm_plt_data %>% 
+  filter(dataType != "structural")
+StrMRI_plt_data = perm_plt_data %>% 
+  filter(dataType == "structural")
 ```
 
-```{r, include=FALSE, eval=FALSE, echo=FALSE}
-perm_plt_data = readRDS("../results/permutations/permResults4plotting.rds")
+```{r, echo=FALSE, eval=FALSE}
+saveRDS(perm_plt_data, "../../output/permutations/permResults4plotting.rds")
+saveRDS(fMRI_plt_data, "../../output/permutations/FMRIpermResults4plotting.rds")
+saveRDS(StrMRI_plt_data, "../../output/permutations/STRMRIpermResults4plotting.rds")
 ```
 
+```{r, eval=TRUE, echo=FALSE}
+perm_plt_data = readRDS("../../output/permutations/permResults4plotting.rds")
+fMRI_plt_data = readRDS("../../output/permutations/FMRIpermResults4plotting.rds")
+StrMRI_plt_data = readRDS("../../output/permutations/STRMRIpermResults4plotting.rds")
+```
 
 ## Visualize results
 ```{r}
-ggplot(perm_plt_data, aes(Accuracy, fill = Distribution)) +
-    geom_density(alpha = .3) +
-    geom_vline( # calculate the means
-        data = data.frame("model"=dataNames,"avg" = sapply(Accuracies, mean)),
-        aes(xintercept = avg)) +
-    facet_grid(~model) + 
-  theme(panel.background = element_rect(fill="white"))
+fMRI_plt = ggplot(fMRI_plt_data, aes(Accuracy, fill = Distribution)) +
+  geom_density(alpha = .3) +
+  geom_vline( # calculate the means
+    data = (
+      data.frame("model"=dataNames,"avg" = sapply(Accuracies, mean)) %>%
+        filter(grepl("^F", model))
+    ),
+    aes(xintercept = avg)) +
+  facet_grid(~model) +
+  ggtitle("Functional Data Model Accuracies and Permutation Test Results") +
+  theme(panel.background = element_rect(fill="white"),
+        plot.title = element_text(hjust = .5))
+
+StrMRI_plt = ggplot(StrMRI_plt_data, aes(Accuracy, fill = Distribution)) +
+  geom_density(alpha = .3) +
+  geom_vline( # calculate the means
+    data = (
+      data.frame("model"=dataNames,"avg" = sapply(Accuracies, mean)) %>%
+        filter(!grepl("^F", model))
+    ),
+    aes(xintercept = avg)) +
+  facet_grid(~model) +
+  ggtitle("Structural Data Model Accuracies and Permutation Test Results") +
+  theme(panel.background = element_rect(fill="white"),
+        plot.title = element_text(hjust = .5))
 ```
 
+```{r, eval=FALSE, echo=FALSE}
+ggsave("../../results/permutations/plots/fMRI_accuracyRFPermResults.pdf",
+       plot = fMRI_plt,
+       height = 3, width = 8, units = "in", device = "pdf")
+ggsave("../../results/permutations/plots/STRMRI_accuracyRFPermResults.pdf", 
+         plot = StrMRI_plt,
+         height = 3, width = 6, units = "in", device = "pdf")
+```
+
+```{r}
+fMRI_plt
+```
+```{r}
+StrMRI_plt
+```
