@@ -378,14 +378,15 @@ perm.pval = lapply(1:6, function(x) {
 </div>
 <div id="view-the-results" class="section level3">
 <h3><span class="header-section-number">1.3.2</span> View the Results:</h3>
-<pre class="r"><code>as.data.frame(list(&quot;CV_Avg_Acc.&quot; = sapply(Accuracies, mean),
+<pre class="r"><code>as.data.frame(list(&quot;data&quot; = c(&quot;FC&quot;,&quot;FD&quot;,&quot;FC.PCA&quot;,&quot;FD.PCA&quot;,&quot;Str&quot;,&quot;Str.PCA&quot;),
+                   &quot;CV_Avg_Acc.&quot; = sapply(Accuracies, mean),
                    &quot;CV_Acc_SD&quot; = sapply(Accuracies, sd),
                    &quot;Null_Mean_Acc.&quot; = sapply(averageNullDist, mean),
                    &quot;Null_Acc_SD&quot; = sapply(averageNullDist, sd),
                    &quot;p&quot; = unlist(perm.pval)))</code></pre>
 <div data-pagedtable="false">
 <script data-pagedtable-source type="application/json">
-{"columns":[{"label":["CV_Avg_Acc."],"name":[1],"type":["dbl"],"align":["right"]},{"label":["CV_Acc_SD"],"name":[2],"type":["dbl"],"align":["right"]},{"label":["Null_Mean_Acc."],"name":[3],"type":["dbl"],"align":["right"]},{"label":["Null_Acc_SD"],"name":[4],"type":["dbl"],"align":["right"]},{"label":["p"],"name":[5],"type":["dbl"],"align":["right"]}],"data":[{"1":"0.5881864","2":"0.06506251","3":"0.5060559","4":"0.05970725","5":"0.08591409"},{"1":"0.5873729","2":"0.06602157","3":"0.5059923","4":"0.05969062","5":"0.08691309"},{"1":"0.5682203","2":"0.05391721","3":"0.5112985","4":"0.05962721","5":"0.16883117"},{"1":"0.5769492","2":"0.05509117","3":"0.5103649","4":"0.05963948","5":"0.13486513"},{"1":"0.6015085","2":"0.05839900","3":"0.5089659","4":"0.05965419","5":"0.06093906"},{"1":"0.5986441","2":"0.05561380","3":"0.5124422","4":"0.05969745","5":"0.07792208"}],"options":{"columns":{"min":{},"max":[10]},"rows":{"min":[10],"max":[10]},"pages":{}}}
+{"columns":[{"label":["data"],"name":[1],"type":["fctr"],"align":["left"]},{"label":["CV_Avg_Acc."],"name":[2],"type":["dbl"],"align":["right"]},{"label":["CV_Acc_SD"],"name":[3],"type":["dbl"],"align":["right"]},{"label":["Null_Mean_Acc."],"name":[4],"type":["dbl"],"align":["right"]},{"label":["Null_Acc_SD"],"name":[5],"type":["dbl"],"align":["right"]},{"label":["p"],"name":[6],"type":["dbl"],"align":["right"]}],"data":[{"1":"FC","2":"0.5881864","3":"0.06506251","4":"0.5060559","5":"0.05970725","6":"0.08591409"},{"1":"FD","2":"0.5873729","3":"0.06602157","4":"0.5059923","5":"0.05969062","6":"0.08691309"},{"1":"FC.PCA","2":"0.5682203","3":"0.05391721","4":"0.5112985","5":"0.05962721","6":"0.16883117"},{"1":"FD.PCA","2":"0.5769492","3":"0.05509117","4":"0.5103649","5":"0.05963948","6":"0.13486513"},{"1":"Str","2":"0.6015085","3":"0.05839900","4":"0.5089659","5":"0.05965419","6":"0.06093906"},{"1":"Str.PCA","2":"0.5986441","3":"0.05561380","4":"0.5124422","5":"0.05969745","6":"0.07792208"}],"options":{"columns":{"min":{},"max":[10]},"rows":{"min":[10],"max":[10]},"pages":{}}}
   </script>
 </div>
 </div>

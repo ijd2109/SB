@@ -144,7 +144,8 @@ Accuracies = readRDS("../../output/permutations/testSetAccuricies.rds")
 
 ### View the Results:
 ```{r}
-as.data.frame(list("CV_Avg_Acc." = sapply(Accuracies, mean),
+as.data.frame(list("data" = c("FC","FD","FC.PCA","FD.PCA","Str","Str.PCA"),
+                   "CV_Avg_Acc." = sapply(Accuracies, mean),
                    "CV_Acc_SD" = sapply(Accuracies, sd),
                    "Null_Mean_Acc." = sapply(averageNullDist, mean),
                    "Null_Acc_SD" = sapply(averageNullDist, sd),
