@@ -1,0 +1,403 @@
+---
+title: "Data Analysis on SB data"
+author: "Ian Douglas"
+date: "6/7/2019"
+output:
+  html_document:
+    number_sections: yes
+    toc: yes
+    df_print: paged
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+  pdf_document:
+    toc: yes
+    df_print: paged
+---
+```{r, include = F, warnings = F, echo=FALSE}
+library(tidyverse)
+library(TSdist)
+library(corrplot)
+library(randomForest)
+library(reticulate)
+```
+
+# A. Filter data for desired subjects:
+## 1. Earliest wave available
+## 2. Subjects younger than 18
+## 3. No wave 3 data (different scanner was used)
+---
+# B. Pull the desired time series
+---
+# C. Analysis:
+## 1. Compute a distance matrix for each brain region, across all participants
+## 2. Create 1 average distance matrix relating all participants (squared distance)
+## 3. Use this distance matrix to cluster participants
+## 4. Predict these clusters using other variables
+## 5. Conduct MANOVA between clusters
+---
+
+# A. Load and select data
+```{r}
+# (1) Filter the SB data for the earliest observations of each participant
+
+load('../../data/3_ALL_long_cort_symptoms_brain_structure_function_epi_ages4-19_2019-05-15.Rdata') # 'monster_SB'
+subjects = list.files('../../data/raw_TS_by_subj')
+# figure out which actual TS data we have for each participant:
+lbls = data.frame(
+  'IDENT_SUBID' = unique(substr(subjects, 1, 5)), stringsAsFactors = FALSE
+) %>%
+  # Record whether they have TS data at each wave
+  group_by(IDENT_SUBID) %>%
+  mutate(has_wave1_TS = 
+           any(subjects %in% paste0(IDENT_SUBID,"_", IDENT_SUBID)),
+         has_wave2_TS = 
+           any(subjects %in% paste(rep(paste0(IDENT_SUBID,"_fu1"),2),collapse="_")),
+         has_wave3_TS = 
+           any(subjects %in% paste(rep(paste0(IDENT_SUBID,"_fu2"),2),collapse="_"))) %>%
+  # Record which wave containing a TS is earliest
+  mutate(wave_to_pull = min(which(c(has_wave1_TS,has_wave2_TS,has_wave3_TS)))) %>% 
+  ungroup %>%
+  #if a participant has only the third wave, delete them
+  filter(wave_to_pull != 3) %>% 
+  group_by(IDENT_SUBID) %>%
+  #make a key to sort by later
+  mutate(uniq_key = paste0(IDENT_SUBID,"_",wave_to_pull)) %>% ungroup
+
+#Now merge in the ages
+lblDataToPull = monster_SB %>% group_by(SUBJECTID_long) %>%
+  mutate(uniq_key = 
+           paste0(sub("_.+$","",SUBJECTID_long),"_", index_wave)) %>%
+  ungroup %>%
+  select(uniq_key, age, GROUP) %>%
+  merge(lbls, ., by = "uniq_key", all.x = TRUE)
+
+#Create a column transforming the info to the filenames
+lblDataToPull$folder_name = NA_character_
+for (i in 1:nrow(lblDataToPull)) {
+  if (lblDataToPull$wave_to_pull[i] == 2) {
+  fnm = paste(
+    rep(
+      paste0(
+        lblDataToPull$IDENT_SUBID[i], "_fu", lblDataToPull$wave_to_pull[i] - 1
+      ), times = 2
+    ), collapse = "_"
+  )
+  lblDataToPull$folder_name[i] = fnm
+  } else
+    fnm = paste(
+      rep(lblDataToPull$IDENT_SUBID[i],times=2), collapse = "_"
+    )
+  lblDataToPull$folder_name[i] = fnm
+}
+
+# Final notes:
+# (a) Four ages are missing but these can be imputed later based on known data
+# (b) some GROUP values are missing so input them now:
+for (i in filter(lblDataToPull,is.na(GROUP))$IDENT_SUBID) {
+ tmp_dat = filter(monster_SB, IDENT_SUBID == i & !is.na(GROUP))
+ lblDataToPull[lblDataToPull$IDENT_SUBID == i,"GROUP"] <- tmp_dat[,"GROUP"][1]
+}
+```
+
+# For aggregating across subjects:
+```{r}
+
+# (2a) Pull time series and compile into a data frame.
+### p = # brain regions to investigate (69 harvard-oxford regions)
+### n = # of subjects after above filtering
+### Time series contain 130 timepoints.
+p = 69; n = nrow(lblDataToPull)
+# Create p data frame with n rows and 130 columns
+masterDataFrameLong = data.frame()
+for (i in 1:nrow(lblDataToPull)) {
+  folder = lblDataToPull$folder_name[i]
+  tmp_df = readRDS(paste0('../../data/raw_TS_by_subj/',folder,'/raw.rds'))
+  if (i == 1) {
+    masterDataFrameLong = rbind(tmp_df, masterDataFrameLong)
+  } else masterDataFrameLong = rbind(masterDataFrameLong, tmp_df)
+}
+#split each column into n-size chunks, then bind them into 69 data frames, of n rows
+masterDfList = lapply(
+  masterDataFrameLong[-1:-8], #ignore custom regions for now 
+  function(x) t(matrix(x, ncol=n, dimnames = list(NULL, lblDataToPull$IDENT_SUBID)))
+)
+head(masterDfList$harvardox_cortical_1[,1:6])
+```
+
+# For computing correlation coeficcients per subject:
+```{r}
+
+# (2a) Pull time series and compile 1 connectivity matrix per subject
+### p = # brain regions to investigate (69 harvard-oxford regions)
+### n = # of subjects after above filtering
+### Time series contain 130 timepoints.
+p = 69; n = nrow(lblDataToPull)
+# Create p data frame with n rows and 130 columns
+masterDfBySubj = list()
+any_missing = c()
+any_nzv = c()
+for (i in lblDataToPull$IDENT_SUBID) {
+  folder = as.character(lblDataToPull[lblDataToPull$IDENT_SUBID==i,"folder_name"])
+  tmp_df = readRDS(paste0('../../data/raw_TS_by_subj/',folder,'/raw.rds'))
+  if (any(is.na(tmp_df))) {
+    any_missing = c(any_missing, i)
+  }
+  CORR=cor(tmp_df[,-1:-8]) #remove the first 8 (custom) regions
+  if (any(is.na(CORR))) {
+    any_nzv = c(any_nzv, i)
+    CORR=cor(tmp_df[-1:-8],use = 'complete.obs')
+  }
+  CORR = lower.tri(CORR)*CORR
+  CORR = replace(CORR, CORR == 0, NA)
+  data_vec = as.numeric(na.omit(as.vector(CORR)))
+  masterDfBySubj[[i]] = data_vec
+}
+# any_nzv identified some subjects with NA; delete them
+funcDataList = masterDfBySubj[!names(masterDfBySubj) %in% any_nzv]
+#compile data frame
+functional_data = as.data.frame(t(as.data.frame(funcDataList)))
+# Create and attach variable names IN SAME ORDER
+vnm_inds = which(!is.na(as.vector(CORR)))
+vnm = paste0(rep(colnames(CORR),times=p),".X.",rep(colnames(CORR),each=p))[vnm_inds]
+names(functional_data) <- vnm
+# Done
+head(functional_data[1:6])
+corPClbl = left_join(data.frame("IDENT_SUBID" = names(funcDataList),
+                  stringsAsFactors = FALSE),
+                  select(lblDataToPull, IDENT_SUBID,age,GROUP)
+                  )
+```
+# For computing Correlation-based distance (connectivity == small distance):
+```{r}
+# (2a) Pull time series and compile 1 connectivity matrix per subject
+### p = # brain regions to investigate (69 harvard-oxford regions)
+### n = # of subjects after above filtering
+### Time series contain 130 timepoints.
+p = 69; n = nrow(lblDataToPull)
+# Create p data frame with n rows and 130 columns
+masterCorDistBySubj = list()
+any_missing = c()
+any_nzv = c()
+for (i in lblDataToPull$IDENT_SUBID) {
+  folder = as.character(lblDataToPull[lblDataToPull$IDENT_SUBID==i,"folder_name"])
+  tmp_df = readRDS(
+    paste0('../../data/raw_TS_by_subj/',folder,'/raw.rds')
+    )[-1:-8] #take out the first 8 columns (with custom regions)
+  if (any(is.na(tmp_df))) {
+    any_missing = c(any_missing, i)
+  }
+  CORR = as.matrix(TSDatabaseDistances(t(tmp_df), distance = "cor"))
+  if (any(is.na(CORR))) {
+    any_nzv = c(any_nzv, i)
+  } else
+    CORR = lower.tri(CORR)*CORR
+    CORR = replace(CORR, CORR == 0, NA)
+    data_vec = as.numeric(na.omit(as.vector(CORR)))
+    masterCorDistBySubj[[i]] = data_vec
+}
+# any_nzv identified some subjects with NA; delete them
+funcDistList = masterCorDistBySubj[!names(masterCorDistBySubj) %in% any_nzv]
+#compile data frame
+functional_dist = as.data.frame(t(as.data.frame(funcDistList)))
+# Create and attach variable names IN SAME ORDER
+vnm_inds = which(!is.na(as.vector(CORR)))
+vnm = paste0(rep(names(tmp_df),times=p),".X.",rep(names(tmp_df),each=p))[vnm_inds]
+names(functional_dist) <- vnm
+# Done
+head(functional_dist[1:6]) # notice the row names were not preserved!
+distPClbl = left_join(
+  data.frame(
+    "IDENT_SUBID" = 
+      lblDataToPull$IDENT_SUBID[!lblDataToPull$IDENT_SUBID %in% any_nzv],
+    stringsAsFactors = FALSE
+  ), 
+  select(lblDataToPull, IDENT_SUBID,age,GROUP)
+)
+```
+
+#conduct PC on the functional data
+```{r}
+funcPCA = prcomp(functional_data, scale. = TRUE, center = TRUE, retx = TRUE)
+distPCA = prcomp(functional_dist, scale. = TRUE, center = TRUE, retx = TRUE)
+plot(1:length(funcPCA$sdev), funcPCA$sdev^2)
+plot(1:length(distPCA$sdev), distPCA$sdev^2)
+```
+
+#Correlation between the solutions
+```{r}
+saveRDS(distPCA$x, "distPCA_x.rds")
+pcCorr = cor(cbind(distPCA$x, funcPCA$x))
+nm = c(paste0("distPC",1:ncol(distPCA$x)),
+       paste0("corPC",1:ncol(distPCA$x)))
+rownames(pcCorr) <- nm; colnames(pcCorr) <- nm
+methodCompareCor <- as.matrix(pcCorr[1:149, 150:298])
+write.csv(methodCompareCor, 'corViz.csv')
+#corrplot(methodCompareCor)
+```
+
+# predict age
+```{r}
+#with correlation-based PCA
+tree_dat = na.omit(as.data.frame(cbind(corPClbl,funcPCA$x)))
+ageRF = randomForest(age ~ .-GROUP-IDENT_SUBID, data = tree_dat, 
+                     mtry = sqrt(ncol(funcPCA$x)),
+                     importance = TRUE)
+tree_res = data.frame(na.omit(corPClbl), "age_pred" = predict(ageRF)) %>%
+  mutate(ageDiff = age - age_pred)
+tree_res_summary = tree_res %>% group_by(GROUP) %>%
+  summarize(avg_pred_error = mean(ageDiff))
+
+#with distance-based PCA
+distTree_dat = na.omit(as.data.frame(cbind(distPClbl,distPCA$x)))
+ageDistRF = randomForest(age ~ .-GROUP-IDENT_SUBID, data = distTree_dat, 
+                     mtry = sqrt(ncol(distPCA$x)),
+                     importance = TRUE)
+distTree_res = data.frame(na.omit(distPClbl), "age_pred" = predict(ageDistRF)) %>%
+  mutate(ageDiff = age - age_pred)
+distTree_res_summary = distTree_res %>% group_by(GROUP) %>%
+  summarize(avg_pred_error = mean(ageDiff))
+```
+
+#grid search
+```{r}
+param_grid = t(expand.grid("ntree"=c(1000,500),
+                           "mtry"=c(seq(12,144,12))#,
+                           #"sampsize"=c(36,73,108,145)
+                           )
+               )
+colnames(param_grid) <- paste0("tree",1:ncol(param_grid))
+#Note the first two trees are fit on the grid without sampsize
+tree_search = apply(
+  param_grid, 2,
+  function(x)
+    randomForest(age ~ .-GROUP-IDENT_SUBID, data = tree_dat,
+                 ntree = x[1], mtry = x[2], importance = TRUE)
+)
+#tree22 was the best: mtry = 132, ntree = 500
+data.frame(na.omit(corPClbl), "age_pred" = predict(tree_search$tree22)) %>%
+  mutate(ageDiff = age - age_pred) %>% 
+  group_by(GROUP) %>%
+  summarize(avg_pred_error = mean(ageDiff))
+#use the same grid and attempt to classify COMP v PI
+classifTree_search = apply(
+  param_grid, 2,
+  function(x)
+    randomForest(as.factor(GROUP) ~ .-age-IDENT_SUBID, data = tree_dat,
+                 ntree = x[1], mtry = x[2], importance = TRUE)
+)
+#tree18 was the best
+
+#re-use the same grid but fit on the distance-based PCs
+distTree_search = apply(
+  param_grid, 2,
+  function(x)
+    randomForest(age ~ .-GROUP-IDENT_SUBID, data = distTree_dat,
+                 ntree = x[1], mtry = x[2], importance = TRUE)
+)
+lapply(distTree_search, function(x) c(mean(x$mse), sd(x$mse)))
+
+#try again with the three parameter grid
+tree_search_3 = apply(
+  param_grid, 2,
+  function(x)
+    randomForest(age ~ .-GROUP-IDENT_SUBID, data = tree_dat,
+                 ntree = x[1], mtry = x[2], sampsize = x[3],
+                 importance = TRUE)
+)
+```
+
+#clustering on the functional connectivity data
+```{r}
+# functional connectivity using correlations predicted a little better
+d_cor = dist(functional_data,method = 'euclidean')
+corClust.ward = hclust(d_cor, method = 'ward.D2')
+corClust_rescale = cmdscale(d_cor, k = 12)
+plot(corClust.ward, labels = corPClbl$GROUP)
+```
+
+#Visualization of time series
+```{r}
+melted = data.frame()
+for (i in 1:69) {
+  region = names(masterDfList)[i]
+  tmp_df = data.frame(
+      "t" = 1:130,
+      "PI"=rowMeans(t(masterDfList[[i]])[,lblDataToPull$GROUP == "PI"]),
+      "COMP"=rowMeans(t(masterDfList[[i]])[,lblDataToPull$GROUP == "COMP"])
+    )
+    comp_mat = t(masterDfList[[i]])[,lblDataToPull$GROUP == "COMP"]
+    tmp_df = data.frame("region" = rep(region,times=260), melt(tmp_df, id = "t"))
+  if (i == 1) {
+    melted = rbind(tmp_df, melted)
+  } else
+    melted = rbind(melted, tmp_df)
+}
+ggplot(melted,
+       aes(x=t,y=value,colour=variable,group=variable)) +
+  geom_line() +
+  facet_grid(cols=vars(region))
+```
+
+
+```{r}
+# 1. Convert each data frame to a distance matrix euclidean distances
+# 2. Aggregate all distance matrices
+# 3. Convert to a `dist` object for clustering.
+
+distList = lapply(
+  masterDfList, 
+  function(x) 
+    as.matrix(dist(x, method = 'euclidean'))
+)
+# Aggregate all matrices to compute average subject-to-subject distance
+a = array(simplify2array(distList), dim = c(n, n, p))
+aggDistMat = apply(a, c(1,2), mean)
+
+# convert to a dist object for clustering.
+aggDist = as.dist(aggDistMat)
+
+#repeat but this time use a correlation matrix
+corMatList = lapply(
+  masterDfList, 
+  function(x) 
+    as.matrix(cor(x))
+)
+# Aggregate all matrices to compute average subject-to-subject distance
+a_cor = array(simplify2array(corMatList), dim = c(n, n, p))
+aggCorMat = apply(a, c(1,2), mean)
+
+# convert to a dist object for clustering.
+diag(aggCorMat) <- 0 #put zeroes at the diagonal
+aggCor = as.dist(aggCorMat)
+```
+
+```{r}
+#distance matrix clustering
+clust.ward = hclust(aggDist, method = 'ward.D2')
+clust.centroid = hclust(aggDist, method = 'centroid')
+```
+
+#results
+```{r}
+plot(clust.ward, labels = lblDataToPull$GROUP)
+```
+
+#cor. matrix clustering
+```{r}
+corClust.ward = hclust(aggCor, method = 'ward.D2')
+corClust.centroid = hclust(aggCor, method = 'centroid')
+plot(corClust.ward, labels = lblDataToPull$GROUP)
+```
+
+#multidimensional scaling
+```{r}
+mdsDist = cmdscale(aggDist, k = 9, eig = FALSE)
+mdsCor = cmdscale(aggCor, k = 9, eig = FALSE)
+par(mfrow = c(1,2))
+plot(mdsDist, labels = lblDataToPull$group, col = round(lblDataToPull$age,digits=0))
+plot(mdsCor, labels = lblDataToPull$group, col = round(lblDataToPull$age,digits=0))
+```
+
+
+

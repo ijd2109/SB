@@ -16,7 +16,7 @@ output:
     df_print: paged
 ---
 # PCA projection plots
-```{r, echo=FALSE, results='hide',message=FALSE}
+```{r, echo=FALSE, results='hide', message=FALSE}
 library(tidyverse)
 ```
 

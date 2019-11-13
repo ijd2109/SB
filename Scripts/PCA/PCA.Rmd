@@ -1,0 +1,215 @@
+---
+title: "PCA"
+author: "Ian Douglas"
+date: "9/25/2019"
+output:
+  html_document:
+    number_sections: yes
+    toc: yes
+    df_print: paged
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+  pdf_document:
+    toc: yes
+    df_print: paged
+---
+```{r}
+library(corrplot)
+library(tidyverse)
+```
+
+# Load in the functional connectivity and dissimilarity data
+-Also read in the labels for plotting purposes
+```{r}
+fcon = readRDS('~/DANL/SB/data/processed/labelledFCor.rds')
+fdis = readRDS('~/DANL/SB/data/processed/labelledFDiss.rds')
+fdisBeta1 = readRDS('~/DANL/SB/data/processed/labelledFDissBeta1.rds')
+if (nrow(fcon) == nrow(fdis) & ncol(fcon) == ncol(fdis)) 
+  {dim(list(fcon, fdis)[[sample(1:2,1)]])}
+```
+
+# Conduct principal components analysis
+-Note that there are more variables than participants, so the lowest dimensional space in which to project the principal components is equal to $n$, not $p$.
+```{r}
+fcPCA = prcomp(select(fcon, -age, -GROUP, -IDENT_SUBID), 
+                 scale. = TRUE, center = TRUE, retx = TRUE)
+saveRDS(funcPCA, '../results/PCA/fcPCAobj.rds')
+fdPCA = prcomp(select(fdis, -age, -GROUP, -IDENT_SUBID), 
+                 scale. = TRUE, center = TRUE, retx = TRUE)
+saveRDS(distPCA, '../results/PCA/fdPCAobj.rds')
+fdPCAbeta1 = prcomp(select(fdisBeta1, -age, -GROUP, -IDENT_SUBID),
+                    scale. = TRUE, center = TRUE, retx = TRUE)
+saveRDS(distPCA, '../results/PCA/fdPCAobj.rds')
+# Write out the labelled PC scores data frame
+fc.labelledPCA = cbind(select(fcon, IDENT_SUBID,GROUP,age), fcPCA$x)
+fd.labelledPCA = cbind(select(fdis, IDENT_SUBID,GROUP,age), fdPCA$x)
+fdBeta1.labelledPCA = cbind(select(fdisBeta1, IDENT_SUBID,GROUP,age), fdPCAbeta1$x)
+saveRDS(fc.labelledPCA,'~/DANL/SB/data/processed/fcPCASCoresLbl.rds')
+saveRDS(fd.labelledPCA,'~/DANL/SB/data/processed/fdPCASCoresLbl.rds')
+saveRDS(fdBeta1.labelledPCA,'~/DANL/SB/data/processed/fdBeta1PCASCoresLbl.rds')
+```
+
+# The number of dimensions to reach 80% variance explained:
+```{r}
+as.matrix(as.data.frame(list("PC"=1:149,
+                             "fdBeta1"=cumsum(fdPCAbeta1$sdev^2/2346),
+                             "fd"=cumsum(fdPCA$sdev^2/2346),
+                             "fc"=cumsum(fdPCA$sdev^2/2346))))
+```
+
+
+Explanation: the `fcPCA` is produced from a set of variables, for which each participant has one score for each pair of brain regions (combinations of size 2 of 69 different units) summing to 2346 variables. Each score is the Pearson correlation between the preprocessed time series of each brain region with that of each other brain region.
+
+The `fdPCA` object is derived from the same process, except that instead of computing the correlation between each time series, a measure of the dissimilarity between the two time series is calculated which is based on pearson correlation. For this reason the results are expected to be similar.
+
+### Correlation between the solutions
+```{r}
+pcCorr = cor(cbind(fcPCA$x, fdPCA$x))
+nm = c(paste0("fcPC",1:ncol(fcPCA$x)),
+       paste0("fdPC",1:ncol(fdPCA$x)))
+rownames(pcCorr) <- nm; colnames(pcCorr) <- nm
+methodCompareCor <- as.matrix(pcCorr[1:149, 150:298])
+# visualize the correlation between the first 30 dimensions across each method 
+corrplot(methodCompareCor[1:30,1:30])
+```
+
+As expected the methods are highly correlated.
+
+### Plot the percentage of the variance explained:
+```{r}
+plot(1:length(funcPCA$sdev), cumsum(funcPCA$sdev^2/2346),
+     ylab = '% Variance explained', 
+     xlab = '# of principal of components',
+     main = 'Method: PCA on Pearson correlations',
+     ylim = c(0,1))
+abline(v = mean(c(tail(which(cumsum(funcPCA$sdev^2/2346)<.8),1),
+                  which(cumsum(funcPCA$sdev^2/2346)>.8)[1])))
+plot(1:length(distPCA$sdev), cumsum(distPCA$sdev^2/2346),
+     ylab = '% Variance explained', 
+     xlab = '# of principal of components',
+     main = 'Method: PCA on dissimilarity measure',
+     ylim = c(0,1))
+abline(v = mean(c(tail(which(cumsum(distPCA$sdev^2/2346)<.8),1),
+                  which(cumsum(distPCA$sdev^2/2346)>.8)[1])))
+plot(1:length(funcPCA$sdev), cumsum(funcPCA$sdev^2/2346),
+     ylab = '% Variance explained', 
+     xlab = '# of principal of components',
+     main = 'Method: PCA on Pearson correlations',
+     ylim = c(0,1))
+abline(v = mean(c(tail(which(cumsum(funcPCA$sdev^2/2346)<.8),1),
+                  which(cumsum(funcPCA$sdev^2/2346)>.8)[1])))
+```
+
+To explain 80% of the variance, both methods required around 33 dimensions (far fewer than 2346).
+
+### Projection plots
+```{r, echo=FALSE}
+corPCAlbl = readRDS('../data/labels/funcConnlbls.rds')
+distPCAlbl = readRDS('../data/labels/funcDistlbls.rds')
+plot(scale(funcPCA$x[,1]),scale(funcPCA$x[,2]), 
+     col = 1+(as.numeric(as.factor(corPCAlbl$GROUP))^2), xlab = 'dimension 1', ylab = 'dimension 2')
+legend('topright', legend = c("PI","COMP"), fill = c(5,2))
+points(scale(distPCA$x[,1]),scale(distPCA$x[,2]), 
+       col = 1+(as.numeric(as.factor(distPCAlbl$GROUP))^2),
+     pch = 2, xlab = 'dimension 1', ylab = 'dimension 2')
+legend('bottomleft', legend = c("Cor","Dist"), pch = 1:2)
+title(main = "Cross-method similarity between Principal Components1 and 2")
+```
+
+This plot shows where the participants have ended up (their "PC scores") along dimensions 1 and 2. The circles represent those projections, one for each participant, as a result of conducting PCA on the pearson correlations, while the triangle-shaped points are the projections for the same individuals, but when the PCs are computed from the dissimilarity metric.
+
+# Assess the variable loadings on each component
+```{r}
+dim1loadings = data.frame("PC1" = funcPCA$rotation[,1],
+                          "var" = names(funcPCA$rotation[,1]),
+                          stringsAsFactors = FALSE) %>%
+  arrange(desc(abs(PC1)))
+dim2loadings=data.frame("PC2" = funcPCA$rotation[,2],
+                          "var" = names(funcPCA$rotation[,2]),
+                          stringsAsFactors = FALSE) %>%
+  arrange(desc(abs(PC2)))
+head(dim1loadings[1:10,])
+head(dim2loadings[1:10,])
+```
+
+```{r, eval=FALSE, echo=FALSE}
+#python
+#from numpy import genfromtxt
+#load = genfromtxt('../results/PCA/cPCAloadings.csv', delimiter=',')
+```
+
+# Structural data PCA
+```{r}
+# read in the data and the list of variables to include
+rawStructuralData = read.csv("../data/raw/structuralBrainData.csv") %>%
+  mutate_at(vars("Measure.volume"), as.character)
+newnm = names(rawStructuralData)
+newnm[grep("Measure.volume", newnm)] = "SUBJECTID_long" 
+names(rawStructuralData) <- newnm
+varListStructural = read.csv("../data/structuralVarNames20191002_MVT.csv")
+varsToKeep = as.character(varListStructural$var[!varListStructural$X...don.t.include == "X"])
+# get labelled structural data and select only the correct variables
+structLabels = readRDS("../data/structuralRaw+Labels+OverlappingVars.rds")[1:10]
+# filter the raw data by choosing the wave1 data:
+# also select the columns in varsToKeep
+structureData = rawStructuralData[, varsToKeep]
+structuralRawDataWithNames = merge(structLabels, rawStructuralData,
+                                   by = "SUBJECTID_long",all.x = TRUE, all.y = FALSE)
+saveRDS(structuralRawDataWithNames, "../data/processed/wave1structuralDataLABELLED.rds")
+structuralRawData = structuralRawDataWithNames[,-1:-10]
+```
+
+# Run PCA
+```{r}
+brainStructurePCA = prcomp(structuralRawData, 
+                           scale. = TRUE, center = TRUE, retx = TRUE)
+saveRDS(brainStructurePCA, "../results/PCA/structPCAobj.rds")
+```
+
+#add the labels back in
+```{r}
+structPCAScores = data.frame(
+  labels[keepRows, c("IDENT_SUBID","age","GROUP")],
+  brainStructurePCA$x
+)
+saveRDS(structPCAScores, "../data/structPCAScoresLabelled.rds")
+```
+
+#Plots
+### Variance-Explained
+```{r}
+plot(1:length(brainStructurePCA$sdev), cumsum(brainStructurePCA$sdev^2/24),
+     ylab = '% Variance explained', 
+     xlab = '# of principal of components',
+     main = 'Method: PCA on Pearson correlations',
+     ylim = c(0,1))
+abline(v = mean(c(tail(which(cumsum(brainStructurePCA$sdev^2/24)<.8),1),
+                  which(cumsum(brainStructurePCA$sdev^2/24)>.8)[1])))
+```
+
+### Projection plots
+```{r}
+par(mfrow = c(2,2))
+plot(structPCAScores[,"PC1"], structPCAScores[,"PC2"],
+     col = 1+(as.numeric(as.factor(structPCAScores$GROUP))^2), 
+     xlab = 'dimension 1', ylab = 'dimension 2', pch = 16, cex = 1.5)
+legend('topright', legend = c("PI","COMP"), fill = c(5,2))
+title("PIs and Comps projected onto PC 1 & 2")
+plot(structPCAScores[,"PC1"], structPCAScores[,"PC3"],
+     col = 1+(as.numeric(as.factor(structPCAScores$GROUP))^2), 
+     xlab = 'dimension 1', ylab = 'dimension 3', pch = 16, cex = 1.5)
+legend('topright', legend = c("PI","COMP"), fill = c(5,2))
+title("PIs and Comps projected onto PC 1 & 3")
+plot(structPCAScores[,"PC2"], structPCAScores[,"PC3"],
+     col = 1+(as.numeric(as.factor(structPCAScores$GROUP))^2), 
+     xlab = 'dimension 2', ylab = 'dimension 3', pch = 16, cex = 1.5)
+legend('topright', legend = c("PI","COMP"), fill = c(5,2))
+title("PIs and Comps projected onto PC 2 & 3")
+plot(structPCAScores[,"PC1"], structPCAScores[,"PC4"],
+     col = 1+(as.numeric(as.factor(structPCAScores$GROUP))^2), 
+     xlab = 'dimension 1', ylab = 'dimension 4', pch = 16, cex = 1.5)
+legend('topright', legend = c("PI","COMP"), fill = c(5,2))
+title("PIs and Comps projected onto PC 1 & 4")
+```
+
