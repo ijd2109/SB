@@ -229,9 +229,9 @@ ggsave("../../results/permutations/plots/STRMRI_accuracyRFPermResults.pdf",
          height = 3, width = 6, units = "in", device = "pdf")
 ```
 
-```{r}
+```{r, fig.width=10,fig.height=3}
 fMRI_plt
 ```
-```{r}
+```{r, fig.width=10,fig.height=3}
 StrMRI_plt
 ```
