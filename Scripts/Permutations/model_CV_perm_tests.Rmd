@@ -1,5 +1,5 @@
 ---
-title: "model_CV_perm_tests"
+title: "Random Forest Classification, Repeated Cross-Validation, & Permutation Testing"
 author: "Ian Douglas"
 date: "11/9/2019"
 output:
@@ -144,11 +144,11 @@ Accuracies = readRDS("../../output/permutations/testSetAccuricies.rds")
 
 ### View the Results:
 ```{r}
-as.data.frame(list("Cross-Val_Mean_Accuracy" = sapply(Accuracies, mean),
-                   "Cross-Val_Acc_SD" = sapply(Accuracies, sd),
+as.data.frame(list("CV_Avg_Acc." = sapply(Accuracies, mean),
+                   "CV_Acc_SD" = sapply(Accuracies, sd),
                    "Null_Mean_Acc." = sapply(averageNullDist, mean),
                    "Null_Acc_SD" = sapply(averageNullDist, sd),
-                   "p-value" = perm.pval))
+                   "p" = unlist(perm.pval)))
 ```
 
 ```{r, echo=FALSE, eval=FALSE}
