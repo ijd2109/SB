@@ -277,7 +277,11 @@ require(beepr) # for beep_on_error; could be replaced with a `testthat` function
 </div>
 <div id="prepare-function-to-automate-model-building-cross-validation-and-permutation-testing." class="section level1">
 <h1><span class="header-section-number">2</span> Prepare function to automate model building, cross validation, and permutation testing.</h1>
-<pre class="r"><code># Repeated 10 fold CV of random forest models for classification trees
+<pre class="r"><code># Function computes:
+### Repeated (x1000) 70/30 train-test cross-validation
+### Random forest models for classification trees
+### Permutation test p value for model accuracies.
+
 RFclassify_CVperm = function(data) {
   # pre-process the data identically for each dataset
   rownames(data) = data$IDENT_SUBID
