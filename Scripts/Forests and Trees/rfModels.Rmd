@@ -157,7 +157,10 @@ rf.cbcl.mods_STR = lapply(strData.list, function(x) {
   return(mod)
 })
 
-lapply(Reduce("list", list(rf.classify.mods_STR, rf.age.mods_STR, rf.cbcl.mods_STR)), function(x) x)
+lapply(
+  Reduce("list", list(rf.classify.mods_STR, rf.age.mods_STR, rf.cbcl.mods_STR)),
+  function(x) {require(randomForest); x}
+)
 ```
 
 -A final set of models using the first 7 and 6 PCs for the structural data with and without cranial vol respectively
@@ -199,7 +202,7 @@ lapply(Reduce("list",
               list(rf.classify.mods.topPCA_STR,
                    rf.age.mods.topPCA_STR,
                    rf.cbcl.mods.topPCA_STR)),
-       function(x) x)
+       function(x) {require(randomForest); x})
 ```
 
 # one more model
