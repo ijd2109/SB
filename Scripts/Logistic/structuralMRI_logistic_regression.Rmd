@@ -69,12 +69,12 @@ logReg.dataList = lapply(logReg.dataList, function(x) {
 ### Fits a logistic regression
 ### Permutation test p value for model accuracies.
 
-logReg_CVperm = function(data, reps = 1000) {
+logReg_CVperm = function(.data, reps = 1000) {
   # Produce 1000 unique train-test splits using a new randomization seed each time:
   trains = lapply(1:reps, function(x) {
     set.seed(x)
     # Require that the test set is 50%-50% of each group
-    PI.indices = which(dat$GROUP == "PI"); COMP.indices = which(dat$GROUP == "COMP")
+    PI.indices = which(.data$GROUP == "PI"); COMP.indices = which(.data$GROUP == "COMP")
     train.size = round(.7*length(PI.indices))
     # sample indices into a training set:
     train = sample(c(sample(PI.indices,size = train.size), 
@@ -91,18 +91,18 @@ logReg_CVperm = function(data, reps = 1000) {
   ### (4) Compute the two-tailed 95% confidence interval for the accuracy from step 2.
   resultsList = lapply(trains, function(y) {
     # 1. fit the model:
-    mod = glm(Y ~ .-GROUP, data = dat[y, ],
+    mod = glm(Y ~ .-GROUP, data = .data[y, ],
               family = "binomial")
     # Fitting complete.
     
     # Get the model's predictions for the testing set:
     binaryPreds = ifelse(
-      predict(mod, newdata = dat[-y, ], type="response") >= .5, 1, 0)
+      predict(mod, newdata = .data[-y, ], type="response") >= .5, 1, 0)
     
     # Format them as factors with all levels in case random sample 
     prediction = factor(ifelse(binaryPreds==1, "PI", "COMP"), 
                         levels = c("PI", "COMP"))
-    actual = factor(dat[-y,]$GROUP, levels = c("PI","COMP"))
+    actual = factor(.data[-y,]$GROUP, levels = c("PI","COMP"))
     # Get the point estimate of the prediction accuracy for this train-test split:
     predictionAccuracy = confusionMatrix(prediction, actual)$overall["Accuracy"]
     
@@ -141,7 +141,7 @@ logReg_CVperm = function(data, reps = 1000) {
 # Run it on each dataset in the list established above
 beepr::beep_on_error(
   logReg_permResults <- lapply(
-    logReg.dataList, function(x) logReg_CVperm(x, reps=1000))
+    logReg.dataList, function(x) logReg_CVperm(.data = x, reps=1000))
 )
 beepr::beep()
 ```
