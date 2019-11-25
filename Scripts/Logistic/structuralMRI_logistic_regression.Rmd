@@ -18,19 +18,31 @@ pc.fc = readRDS('~/DANL/SB/data/processed/fcPCASCoresLbl.rds')
 pc.fdBeta1 = readRDS('~/DANL/SB/data/processed/fdBeta1PCASCoresLbl.rds')
 topPC.fc = pc.fc[ , -c(grep("^PC36$", names(pc.fc)):ncol(pc.fc))]
 topPC.fdBeta1 = pc.fdBeta1[ , -c(grep("^PC36$", names(pc.fdBeta1)):ncol(pc.fdBeta1))]
+# remove pc.fc and pc.fdBeta1 from which best PCs were retained
+rm(list = c("pc.fc","pc.fdBeta1"))
 # Structural data
 lblStrData = readRDS("~/DANL/SB/data/processed/structuralLabelled.rds")
 lblStrData_noWBV = select(lblStrData,-EstimatedTotalIntraCranialVol)
-# Now PCA
+# Now structural PCA
 lblStrPCAScores = readRDS("~/DANL/SB/data/processed/strPCAscoresLabelled.rds")
 lblStrPCAScores_noWBV = readRDS("~/DANL/SB/data/processed/strPCAscoresLabelled_noWBV.rds")
+# retain best PCs:
+topStrPCA =lblStrPCAScores[, 
+  -c(grep("^PC8$", names(lblStrPCAScores)):tail(grep("^PC",names(lblStrPCAScores)),1))]
+topStrPCA_noWBV =lblStrPCAScores_noWBV[, 
+  -c(grep("^PC7$", names(lblStrPCAScores_noWBV)):tail(
+    grep("^PC", names(lblStrPCAScores_noWBV)),1))]
+rm(list=c("lblStrPCAScores","lblStrPCAScores_noWBV"))
 ```
 
 ```{r}
 logReg.dataList = list(
-  fcon, fdisBeta1, topPC.fc, topPC.fdBeta1, 
-  lblStrData, lblStrPCAScores, lblStrData_noWBV, lblStrPCAScores_noWBV
+  fcon, topPC.fc, fdisBeta1, topPC.fdBeta1, 
+  lblStrData, topStrPCA, lblStrData_noWBV, topStrPCA_noWBV
 )
+# now delete the data from the environment, since they are in the above list
+rm(list = c('fcon', 'fdisBeta1', 'topPC.fc', 'topPC.fdBeta1', 
+  'lblStrData', 'topStrPCA', 'lblStrData_noWBV', 'topStrPCA_noWBV'))
 ```
 
 Note, PI will be recoded as 1, COMP are 0.
