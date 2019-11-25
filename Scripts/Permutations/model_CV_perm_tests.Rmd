@@ -3,6 +3,9 @@ title: "Random Forest Classification, Repeated Cross-Validation, & Permutation T
 author: "Ian Douglas"
 date: "11/9/2019"
 output:
+  pdf_document:
+    toc: yes
+    df_print: paged
   html_document:
     number_sections: yes
     toc: yes
@@ -10,9 +13,6 @@ output:
     toc_float:
       collapsed: no
       smooth_scroll: yes
-  pdf_document:
-    toc: yes
-    df_print: paged
 ---
 # Cross validation of models, and permutation testing for model accuracy metrics
 

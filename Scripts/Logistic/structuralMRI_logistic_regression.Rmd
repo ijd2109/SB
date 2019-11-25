@@ -10,18 +10,39 @@ require(caret)
 ```
 
 ### Prepare the data
+```{r}
+fcon = readRDS('~/DANL/SB/data/processed/labelledFCor.rds')
+fdisBeta1 = readRDS('~/DANL/SB/data/processed/labelledFDissBeta1.rds')
+# read in PCA data
+pc.fc = readRDS('~/DANL/SB/data/processed/fcPCASCoresLbl.rds')
+pc.fdBeta1 = readRDS('~/DANL/SB/data/processed/fdBeta1PCASCoresLbl.rds')
+topPC.fc = pc.fc[ , -c(grep("^PC36$", names(pc.fc)):ncol(pc.fc))]
+topPC.fdBeta1 = pc.fdBeta1[ , -c(grep("^PC36$", names(pc.fdBeta1)):ncol(pc.fdBeta1))]
+# Structural data
+lblStrData = readRDS("~/DANL/SB/data/processed/structuralLabelled.rds")
+lblStrData_noWBV = select(lblStrData,-EstimatedTotalIntraCranialVol)
+# Now PCA
+lblStrPCAScores = readRDS("~/DANL/SB/data/processed/strPCAscoresLabelled.rds")
+lblStrPCAScores_noWBV = readRDS("~/DANL/SB/data/processed/strPCAscoresLabelled_noWBV.rds")
+```
+
+```{r}
+logReg.dataList = list(
+  fcon, fdisBeta1, topPC.fc, topPC.fdBeta1, 
+  lblStrData, lblStrPCAScores, lblStrData_noWBV, lblStrPCAScores_noWBV
+)
+```
 
 Note, PI will be recoded as 1, COMP are 0.
 ```{r}
-# conduct this on the structural data for now
-logReg.dataList = list(lblStrData_noWBV, lblStrPCAScores_noWBV)
 # filter/pre-process these datasets in a uniform way:
 logReg.dataList = lapply(logReg.dataList, function(x) {
   rownames(x) = x$IDENT_SUBID
   return(
     na.omit(
-    data %>% 
-      select(-one_of("IDENT_SUBID","SUBJECTID_long", "age", "wave_to_pull", "cbcl_totprob_t"))
+    x %>% 
+      dplyr::select(-one_of("IDENT_SUBID","SUBJECTID_long", 
+                            "age", "wave_to_pull", "cbcl_totprob_t"))
   ) %>%
     #binarize GROUP such that PI = 1, COMP = 0.
     mutate(Y = ifelse(GROUP == "PI", 1L, 0L))
@@ -37,15 +58,6 @@ logReg.dataList = lapply(logReg.dataList, function(x) {
 ### Permutation test p value for model accuracies.
 
 logReg_CVperm = function(data, reps = 1000) {
-  # pre-process the data identically for each dataset
-  rownames(data) = data$IDENT_SUBID
-  dat = na.omit(
-    data %>% 
-      select(-one_of("IDENT_SUBID","SUBJECTID_long", "age", "wave_to_pull", "cbcl_totprob_t"))
-  ) %>%
-    #binarize GROUP such that PI = 1, COMP = 0.
-    mutate(Y = ifelse(GROUP == "PI", 1L, 0L))
-  
   # Produce 1000 unique train-test splits using a new randomization seed each time:
   trains = lapply(1:reps, function(x) {
     set.seed(x)
@@ -117,9 +129,9 @@ logReg_CVperm = function(data, reps = 1000) {
 # Run it on each dataset in the list established above
 beepr::beep_on_error(
   logReg_permResults <- lapply(
-    logReg.dataList, function(x) logReg_CVperm(x, reps=1000)),
-  2 # choose the beep for the error
+    logReg.dataList, function(x) logReg_CVperm(x, reps=1000))
 )
+beepr::beep()
 ```
 
 # Extract the results
