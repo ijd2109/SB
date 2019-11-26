@@ -11,7 +11,7 @@ output:
       collapsed: no
       smooth_scroll: yes
 ---
-```{r, results='hide'}
+```{r, message=FALSE, results='hide'}
 require(tidyverse)
 require(caret)
 require(beepr)
@@ -44,10 +44,13 @@ rm(list=c("lblStrPCAScores","lblStrPCAScores_noWBV"))
 ```
 
 ```{r, eval=FALSE}
+# put each data frame into a single list of data frames
 logReg.dataList = list(
   fcon, topPC.fc, fdisBeta1, topPC.fdBeta1, 
   lblStrData, topStrPCA, lblStrData_noWBV, topStrPCA_noWBV
 )
+```
+```{r, eval=FALSE, echo=FALSE}
 # now delete the data from the environment, since they are in the above list
 rm(list = c('fcon', 'fdisBeta1', 'topPC.fc', 'topPC.fdBeta1', 
   'lblStrData', 'topStrPCA', 'lblStrData_noWBV', 'topStrPCA_noWBV'))
