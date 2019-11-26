@@ -141,7 +141,7 @@ logReg_CVperm = function(.data, reps = 1000) {
       all(sapply(resultsList, length) == 2) &
       all(sapply(resultsList, function(a) sapply(a, length)) == c(1, reps))) {
     
-    # Then return the results corresponding to each dataset passed to RFclassify_CVperm()
+    # Then return the results corresponding to each dataset passed to logReg_CVperm()
     return(resultsList)
   } else break
 }
