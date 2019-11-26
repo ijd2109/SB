@@ -154,6 +154,11 @@ beepr::beep_on_error(
 beepr::beep()
 ```
 
+```{r, eval=FALSE,echo=FALSE}
+saveRDS(logReg_permResults, 
+        "~/DANL/SB/output/permutations/ALLpermTestLogisticReg.rds")
+```
+
 # Extract the results
 ```{r, eval=FALSE}
 ## Accuracies
