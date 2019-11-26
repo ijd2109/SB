@@ -2,7 +2,14 @@
 title: "Logistic Regression Classification, Repeated Cross-Validation, & Permutation Testing"
 author: "Ian Douglas"
 date: "11/15/2019"
-output: html_document
+output:
+  html_document:
+    number_sections: yes
+    toc: yes
+    df_print: paged
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
 ---
 ```{r, results='hide'}
 require(tidyverse)
@@ -36,7 +43,7 @@ topStrPCA_noWBV =lblStrPCAScores_noWBV[,
 rm(list=c("lblStrPCAScores","lblStrPCAScores_noWBV"))
 ```
 
-```{r}
+```{r, eval=FALSE}
 logReg.dataList = list(
   fcon, topPC.fc, fdisBeta1, topPC.fdBeta1, 
   lblStrData, topStrPCA, lblStrData_noWBV, topStrPCA_noWBV
@@ -253,13 +260,9 @@ ggsave("../../../results/permutations/plots/STRMRILogReg_accuracyRFPermResults.p
          height = 3, width = 8, units = "in", device = "pdf")
 ```
 
-
 ```{r, fig.width=10,fig.height=3}
 fMRI_plt
 ```
 ```{r, fig.width=10,fig.height=3}
 StrMRI_plt
 ```
-
-
-
