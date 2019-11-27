@@ -1,0 +1,172 @@
+---
+title: "rfGridSearchCV"
+author: "Ian Douglas"
+date: "11/26/2019"
+output:
+  html_document:
+    number_sections: yes
+    toc: yes
+    df_print: paged
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+  pdf_document:
+    toc: yes
+    df_print: paged
+---
+
+```{r, message=FALSE, results='hide'}
+require(tidyverse)
+require(randomForest)
+require(doParallel)
+```
+
+# load functional connectivity data (with labels) and its PCA
+# Also load the functional dissim. data (with lables) and its PCA
+```{r}
+# functional conn. and dissim. data
+fdisBeta1 = readRDS('~/DANL/SB/data/processed/labelledFDissBeta1.rds')
+fcon = readRDS('~/DANL/SB/data/processed/labelledFCor.rds')
+# read in PCA data
+pc.fdBeta1 = readRDS('~/DANL/SB/data/processed/fdBeta1PCASCoresLbl.rds')
+pc.fc = readRDS('~/DANL/SB/data/processed/fcPCASCoresLbl.rds')
+# note, each PCA required 35 dimensions to reach 80% variance explained.
+# Filter by that so that k is smaller than n (necessary because p was not smaller than n).
+topPC.fdBeta1 = pc.fdBeta1[ , -c(grep("^PC36$", names(pc.fdBeta1)):ncol(pc.fdBeta1))]
+topPC.fc = pc.fc[ , -c(grep("^PC36$", names(pc.fc)):ncol(pc.fc))]
+```
+
+# Grid CV on the first data frame
+```{r}
+# fdisBeta1
+param_grid = as.data.frame(t(expand.grid(
+  "mtry" = c(round(sqrt(ncol(select(fdisBeta1,contains("harvard"))))),5,10,100,1000,2300),
+  "ntree" = c(500,750,1000,2000),
+  "nodesize" = c(1, round(sqrt(nrow(fdisBeta1))))
+)))
+```
+
+```{r}
+rfClassify= function(x, data) {
+  dat = na.omit(select(data, -IDENT_SUBID, -age))
+  return(
+    randomForest(as.factor(GROUP) ~., data = dat,
+                 mtry = x[1],
+                 ntree = x[2],
+                 nodesize = x[3])
+  )
+}
+```
+
+# run grid search
+```{r}
+fdisBeta1_GridCV = mclapply(
+  X = param_grid, 
+  FUN = function(x) rfClassify(x = x, data = fdisBeta1)
+)
+saveRDS(fdisBeta1_GridCV, "~/DANL/SB/output/grid_search/fdis_gridCV1.rds")
+```
+
+# View results
+```{r}
+# best parameters based upon accuracy:
+param_grid[which.max(
+  sapply(fdisBeta1_GridCV, function(x)
+    sum(diag(x$confusion))/sum(x$confusion)
+  )
+)]
+fdisBeta1_GridCV[[which.max(
+  sapply(fdisBeta1_GridCV, function(x)
+    sum(diag(x$confusion))/sum(x$confusion)
+  )
+)]]
+```
+
+```{r}
+# best parameters based upon accuracy predicting PI:
+param_grid[which.min(
+  sapply(fdisBeta1_GridCV, function(x)
+    x$confusion[6]
+  )
+)]
+# best model:
+fdisBeta1_GridCV[[which.min(
+  sapply(fdisBeta1_GridCV, function(x)
+    x$confusion[6]
+  )
+)]]
+```
+# compile results
+```{r}
+fdisBeta1_GridCV = readRDS("~/DANL/SB/output/grid_search/fdis_gridCV1.rds")
+fdBeta1_CV_results = data.frame(
+  t(param_grid),
+  as.data.frame(list("Accuracy" = sapply(fdisBeta1_GridCV, function(x) {
+    sum(diag(x$confusion))/sum(x$confusion)}),
+                     "PI.err.rate" = 
+                       sapply(fdisBeta1_GridCV, function(x) x$confusion[6])
+  ))
+)
+fdBeta1_CV_results[which.max(fdBeta1_CV_results$Accuracy),]
+fdBeta1_CV_results[which.min(fdBeta1_CV_results$PI.err.rate),]
+```
+
+# plot
+```{r}
+ggplot(
+  summarize(group_by(fdBeta1_CV_results,mtry), 
+            avgAcc = mean(Accuracy),avgPI.Err=mean(PI.err.rate))
+) +
+  geom_line(aes(x = mtry, y = avgAcc),color="blue") +
+  geom_line(aes(x = mtry, y = avgPI.Err),color="orange")
+```
+
+# repeat but with the sampsize parameter added!
+```{r}
+rfClassify_sampsize= function(x, data) {
+  dat = na.omit(select(data, -IDENT_SUBID, -age))
+  n_pi = sum(dat$GROUP=="PI")
+  return(
+    randomForest(as.factor(GROUP) ~., data = dat,
+                 mtry = x[1],
+                 ntree = x[2],
+                 nodesize = x[3],
+                 # downsample COMPS:
+                 strata = dat$GROUP,
+                 sampsize = c(n_pi, n_pi))
+  )
+}
+```
+
+# run grid search
+```{r}
+fdisBeta1_GridCV_sampsize = mclapply(
+  X = param_grid, 
+  FUN = function(x) {
+    rfClassify_sampsize(x = x, data = fdisBeta1)
+  }
+)
+saveRDS(fdisBeta1_GridCV_sampsize,"~/DANL/SB/output/grid_search/fdis_sampsize_gridCV1.rds")
+# best accuracy and PI error rate:
+fdBeta1_CV_results_sampsize = data.frame(
+  t(param_grid),
+  as.data.frame(list("Accuracy" = sapply(fdisBeta1_GridCV_sampsize, function(x) {
+    sum(diag(x$confusion))/sum(x$confusion)}),
+                     "PI.err.rate" = 
+                       sapply(fdisBeta1_GridCV_sampsize, function(x) x$confusion[6])
+  ))
+)
+
+fdBeta1_CV_results_sampsize[which.max(fdBeta1_CV_results_sampsize$Accuracy),]
+fdBeta1_CV_results_sampsize[which.min(fdBeta1_CV_results_sampsize$PI.err.rate),]
+```
+
+```{r}
+ggplot(
+  summarize(group_by(fdBeta1_CV_results_sampsize,mtry), 
+            avgAcc = mean(Accuracy),avgPI.Err=mean(PI.err.rate))
+) +
+  geom_line(aes(x = mtry, y = avgAcc),color="blue") +
+  geom_line(aes(x = mtry, y = avgPI.Err),color="orange")
+```
+
