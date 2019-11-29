@@ -19,6 +19,8 @@ output:
 require(tidyverse)
 require(randomForest)
 require(doParallel)
+require(caret)
+require(pROC)
 ```
 
 # load functional connectivity data (with labels) and its PCA
@@ -169,4 +171,235 @@ ggplot(
   geom_line(aes(x = mtry, y = avgAcc),color="blue") +
   geom_line(aes(x = mtry, y = avgPI.Err),color="orange")
 ```
+
+Using the sampsize argument greatly improves predictions 
+
+# Set up param grid for the PCA datasets
+```{r}
+# based on the number of rows and columns of the pca data frame
+param_grid_PCA = as.data.frame(t(expand.grid(
+  "mtry" = c(round(sqrt(ncol(select(pc.fdBeta1,contains("PC"))))),5,50,100,130),
+  "ntree" = c(750,1000,2000),
+  "nodesize" = c(1, 5, 10, 15)
+)))
+```
+
+# define function to fit RF to PCA data
+```{r}
+rfClassifyPCA_sampsize= function(x, data) {
+  dat = na.omit(select(data, GROUP, starts_with("PC")))
+  n_pi = sum(dat$GROUP=="PI")
+  return(
+    randomForest(as.factor(GROUP) ~., data = dat,
+                 mtry = x[1],
+                 ntree = x[2],
+                 nodesize = x[3],
+                 # downsample COMPS:
+                 strata = dat$GROUP,
+                 sampsize = c(n_pi, n_pi))
+  )
+}
+```
+
+# fit model to each parameter combination:
+```{r}
+# grid search:
+fdisBeta1PCA_GridCV_sampsize = mclapply(
+  X = param_grid_PCA, 
+  FUN = function(x) {
+    rfClassifyPCA_sampsize(x = x, data = pc.fdBeta1)
+  }
+)
+beepr::beep()
+saveRDS(fdisBeta1PCA_GridCV_sampsize, 
+        "~/DANL/SB/output/grid_search/fdisPCA_gridCV_sampsizeRawOutput.rds")
+```
+
+```{r}
+fdBeta1PCA_CV_results_sampsize = data.frame(
+  t(param_grid_PCA),
+  as.data.frame(list("Accuracy" = 
+                       sapply(fdisBeta1PCA_GridCV_sampsize, function(x) {
+    sum(diag(x$confusion))/sum(x$confusion)}),
+                     "PI.err.rate" = 
+                       sapply(fdisBeta1PCA_GridCV_sampsize, function(x) x$confusion[6])
+  ))
+)
+
+fdBeta1PCA_CV_results_sampsize[which.max(fdBeta1PCA_CV_results_sampsize$Accuracy),]
+fdBeta1PCA_CV_results_sampsize[which.min(fdBeta1PCA_CV_results_sampsize$PI.err.rate),]
+```
+
+Conclusion: allow for a larger feature space, but PCA does not decompose functional data well.
+
+# Further tune the nodesize argument, keeping other parameters at opitmum
+```{r}
+# based on the number of rows and columns of the pca data frame
+nodesize_grid = as.data.frame(t(expand.grid(
+  "nodesize" = c(seq(1, 21, by = 2))
+)))
+```
+
+# define function to fit RF to PCA data
+```{r}
+rf_nodesizeTune = function(x, data) {
+  dat = na.omit(select(data, GROUP, contains("harvard")))
+  n_pi = sum(dat$GROUP=="PI")
+  return(
+    randomForest(as.factor(GROUP) ~., data = dat,
+                 mtry = 2300,
+                 ntree = 1500,
+                 nodesize = x[1],
+                 # downsample COMPS:
+                 strata = dat$GROUP,
+                 sampsize = c(n_pi, n_pi))
+  )
+}
+```
+
+# fit model to each parameter combination:
+```{r}
+# grid search:
+fdisBeta1_nodesizeTune = mclapply(
+  X = nodesize_grid, 
+  FUN = function(x) {
+    rf_nodesizeTune(x = x, data = fdisBeta1)
+  }
+)
+beepr::beep()
+saveRDS(fdisBeta1_nodesizeTune, 
+        "~/DANL/SB/output/grid_search/fdis_nodesizeTuneRawOutput.rds")
+```
+
+```{r}
+fdBeta1_nodesizeTuneResults = data.frame(
+  t(nodesize_grid),
+  as.data.frame(list("Accuracy" = 
+                       sapply(fdisBeta1_nodesizeTune, function(x) {
+    sum(diag(x$confusion))/sum(x$confusion)}),
+                     "PI.err.rate" = 
+                       sapply(fdisBeta1_nodesizeTune, function(x) x$confusion[6])
+  ))
+)
+
+fdBeta1_nodesizeTuneResults[which.max(fdBeta1_nodesizeTuneResults$Accuracy),]
+fdBeta1_nodesizeTuneResults[which.min(fdBeta1_nodesizeTuneResults$PI.err.rate),]
+```
+
+# modify the grid search function to minimize test set predictions
+```{r}
+# set it up to run on the fdistBeta1 data
+rf_TrainTestCV = function(grid, data) {
+  dat = na.omit(select(data, GROUP, contains("harvard")))
+  n_pi = sum(dat$GROUP=="PI")
+  train_i = c(sample(which(dat$GROUP=="PI"),round(n_pi*.7)), 
+              sample(which(dat$GROUP=="COMP"),round(.7*n_pi)))
+  dat$GROUP = factor(dat$GROUP)
+  train = dat[train_i, ]; test = dat[-train_i,]
+  mod = randomForest(GROUP ~., data = train,
+                       mtry = 2300,
+                       ntree = 1500,
+                       nodesize = grid[1])
+  confMat = confusionMatrix(factor(predict(mod, newdata=test)),test$GROUP)
+  Acc = confMat$overall["Accuracy"]
+  pi.pred = factor(predict(mod, newdata=test))[test$GROUP=="PI"]
+  pi.actual = test$GROUP[test$GROUP=="PI"]
+  pi.Acc = confusionMatrix(pi.pred, pi.actual)$overall["Accuracy"]
+  return(list(Acc, pi.Acc))
+}
+```
+
+# fit model to each parameter combination:
+```{r}
+# grid search:
+fdisBeta1_TrainTestCV_nodesizeTune = mclapply(
+  X = nodesize_grid, 
+  FUN = function(x) {
+    rf_TrainTestCV(grid = x, data = fdisBeta1)
+  }
+)
+beepr::beep()
+saveRDS(fdisBeta1_TrainTestCV_nodesizeTune, 
+        "~/DANL/SB/output/grid_search/fdis_TrainTestNodesizeTuneRawOutput.rds")
+```
+
+```{r}
+fdis_TrainTestCV_nodeTune.Res = as.data.frame(
+  list(
+    "nodesize" = seq(1,21,by=2),
+    "Acc" = sapply(fdisBeta1_TrainTestCV_nodesizeTune, function(x) x[[1]]),
+    "pi.Acc" = sapply(fdisBeta1_TrainTestCV_nodesizeTune, function(x) x[[2]])
+  )
+) %>%
+  mutate(max_Acc = replace(rep("FALSE",times=nrow(.)),1:nrow(.)==which.max(Acc),"TRUE"),
+         max_pi_Acc = replace(rep("FALSE",times=nrow(.)),1:nrow(.)==which.max(pi.Acc),"TRUE"))
+```
+
+nodesize of 7 appears to strike a good balance predicting overall and PIs
+
+# Grid CV with structural data
+```{r}
+# First, raw structural data, with and without cranial volume
+StrData = readRDS("~/DANL/SB/data/processed/structuralLabelled.rds")
+StrData_noWBV = select(StrData,-EstimatedTotalIntraCranialVol)
+# Now PCA
+StrPCA = readRDS("~/DANL/SB/data/processed/strPCAscoresLabelled.rds")
+StrPCA_noWBV = readRDS("~/DANL/SB/data/processed/strPCAscoresLabelled_noWBV.rds")
+strData.list = list(StrData, StrData_noWBV, StrPCA, StrPCA_noWBV)
+```
+
+```{r}
+rf_gridCV_Str = function(data) {
+  # automate all steps above
+  dat = na.omit(
+    select(data, -one_of("age","IDENT_SUBID","SUBJECTID_long",
+                         "cbcl_totprob_t", "wave_to_pull")))
+  dat$GROUP = factor(dat$GROUP)
+  n_pi = sum(dat$GROUP=="PI")
+  grid = as.data.frame(t(expand.grid(
+    "mtry" = seq((round(ncol(dat))-3), 3, by = -3),
+    "nodesize" = c(1, 5, round(sqrt(nrow(dat)))),
+    "ntree" = c(750, 1000, 2000))))
+  grid_results = mclapply(grid, function(x) {
+    fit = randomForest(GROUP ~., data = dat,
+                       mtry = x[1],
+                       nodesize = x[2],
+                       ntree = x[3],
+                       # downsample COMPS:
+                       strata = dat$GROUP,
+                       sampsize = c(n_pi, n_pi))
+    Acc = sum(diag(fit$confusion))/sum(fit$confusion)
+    pi.Acc = 1 - fit$confusion[6]
+    return(as.data.frame(list("Acc" = Acc, "pi.Acc" = pi.Acc)))
+  })
+  return(cbind(t(grid),Reduce("rbind", grid_results))) # return one data frame per grid CV
+}
+```
+
+# run it on all data frames
+```{r}
+str_gridCV = mclapply(X = strData.list, mc.cores = detectCores() - 1,
+  FUN = rf_gridCV_Str
+)
+```
+
+```{r}
+saveRDS(str_gridCV, "~/DANL/SB/output/grid_search/str_GridCVResultsRaw.rds")
+```
+
+# results
+```{r}
+lapply(str_gridCV, function(x) list(x[which.max(x$Acc),],x[which.max(x$pi.Acc),]))
+```
+
+For the first dataset, mtry should be 3, nodesize 1; for the next mtry 5, nodesize 1; then mtry 11, nodesize 12; then mtry 16, nodesize 1, ntree 750. For the first three ntree should be 750 or 1000. 
+
+```{r}
+lapply(str_gridCV, function(x) summary(lm(scale(pi.Acc) ~ nodesize, data = x)))
+```
+
+Results show that higher nodesize may improve PI accuracy for PCA (but not overall).
+
+
+
 
