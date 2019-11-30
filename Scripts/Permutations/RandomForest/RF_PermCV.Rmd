@@ -47,8 +47,8 @@ StrPCA_noWBV = readRDS("~/DANL/SB/data/processed/strPCAscoresLabelled_noWBV.rds"
 data_list = list(
   "FD" = fdisBeta1,
   "FC" = fcon,
-  "FDPCA" = topPC.fdBeta1,
-  "FCPCA" = topPC.fc,
+  "FDPCA" = topPC.fdBeta1, # note, using the numberof PCs required to explain 80% variance
+  "FCPCA" = topPC.fc, # note, using the numberof PCs required to explain 80% variance
   "Str" = StrData,
   "Str_noWBV" = StrData_noWBV,
   "StrPCA" = StrPCA,
@@ -70,17 +70,19 @@ data_list = lapply(data_list, function(x) {
 param_list = list(
   "FD" = c("mtry"=2350,"ntree"=1501,"nodesize"= 7),
   "FC" = c("mtry"=2350,"ntree"=1501,"nodesize"= 7),
-  "FDPCA" = c("mtry"=135,"ntree"=801,"nodesize"= 7),
-  "FCPCA" = c("mtry"=135,"ntree"=801,"nodesize"= 7),
+  "FDPCA" = c("mtry"=30,"ntree"=801,"nodesize"= 7),
+  "FCPCA" = c("mtry"=30,"ntree"=801,"nodesize"= 7),
   "Str" = c("mtry"=3,"ntree"=851,"nodesize"= 5),
   "Str_noWBV" = c("mtry"=5,"ntree"=851,"nodesize"= 5),
   "StrPCA" = c("mtry"=19,"ntree"=2001,"nodesize"= 12),
   "StrPCA_noWBV" = c("mtry"=17,"ntree"=851,"nodesize"= 5)
-) 
+)
+as.data.frame(param_list)
 ```
 
-# get the baseline fit for OOB score and varImp
-```{r}
+# Get the "baseline" fits to generate OOB scores and variable importances.
+  This differs from the later models in that it conducts bagging, but not cross validation.
+```{r, eval=FALSE}
 set.seed(111) # for reproducibility.
 bestForest.list = mclapply(X = names(data_list), FUN = function(x) {
   dat = data_list[[x]]; params = param_list[[x]]
@@ -105,10 +107,14 @@ OOBs = sapply(bestForest.list, function(x) {
 })
 ```
 
-# run function on all datasets
-```{r}
+```{r, eval=FALSE,echo=FALSE}
+# RE-RUN ON THE TWO FUNCTIONAL PCA DATASETS
 
-permutationResults = mclapply(X = names(data_list), mc.cores = detectCores() - 1, 
+# THEN INSERT INTO THE PERMUTATION RESULTS
+
+# THEN DELETE THIS CHUNK, RERUN ALL OTHER COMPUTATIONS USING `permutationResults`
+
+PCApermRedoResults = mclapply(X = c("FDPCA", "FCPCA"), mc.cores = detectCores() - 1, 
   FUN = function(x) {
     dat = data_list[[x]]; params = param_list[[x]]
     # pre-proc
@@ -153,7 +159,70 @@ permutationResults = mclapply(X = names(data_list), mc.cores = detectCores() - 1
     return(crossVal.res)
   }
 )
+names(PCApermRedoResults) <- c("FDPCA", "FCPCA")
+permutationResults <- readRDS("~/DANL/SB/output/permutations/FINALgridCVPerm.rds")
+names(permutationResults) <- names(data_list)
+permutationResults[["FDPCA"]] <- PCApermRedoResults[["FDPCA"]]
+permutationResults[["FCPCA"]] <- PCApermRedoResults[["FCPCA"]]
+# AND THEN OVERWRITE THE PREVIOUS RESULTS:
 saveRDS(permutationResults, "~/DANL/SB/output/permutations/FINALgridCVPerm.rds")
+```
+
+# run function on all datasets
+```{r, eval=FALSE}
+
+permutationResults = mclapply(X = names(data_list), mc.cores = detectCores() - 1, 
+  FUN = function(x) {
+    dat = data_list[[x]]; params = param_list[[x]]
+    # pre-proc
+    dat = na.omit(
+      select(dat, -one_of("age","IDENT_SUBID","SUBJECTID_long",
+                           "wave_to_pull", "cbcl_totprob_t")))
+    #train test split
+    dat$GROUP = factor(dat$GROUP)
+    index_pi = which(dat$GROUP == "PI"); index_comp = which(dat$GROUP !="PI")
+    train_i = replicate(n = 1000, simplify = FALSE, 
+                        expr=c(sample(index_pi,size=round(length(index_pi)*.75)),
+                               sample(index_comp,size=round(length(index_pi)*.75))))
+    crossVal.res = mclapply(X = train_i, mc.cores = detectCores() - 1, 
+      FUN = function(y, dat = dat, params = params) {
+        training = dat[y, ]; test = dat[-y, ]
+        fit = randomForest(GROUP ~ ., data = training,
+                           mtry = params[1],
+                           ntree = params[2],
+                           nodesize = params[3],
+                           strata = training$GROUP,
+                           sampsize = c(round(length(index_pi)*.75),
+                                        round(length(index_pi)*.75))
+        )
+        # get the predicted, actual, accuracy, and null dist of 1000 permuted accuracies
+        pred = factor(predict(fit, newdata = test), levels = c("COMP", "PI"))
+        actual = factor(test$GROUP, levels = c("COMP","PI"))
+        prob1 = predict(fit, newdata = test, type="prob")[,"PI"]
+        predActual.dat = as.data.frame(
+          list("IDENT_SUBID"=rownames(test), "pred"=pred, "actual"=actual, "proba.pi"=prob1)
+        )
+        crossValAccuracy = confusionMatrix(pred, actual)$overall["Accuracy"]
+        nullDistr = as.data.frame(list("nullAcc" = replicate(simplify = TRUE, n = 1000,
+          expr = confusionMatrix(pred, sample(actual))$overall["Accuracy"])
+        ))
+        results= list(
+          "predActual.dat" = predActual.dat,
+          "CV_Accuracy"=crossValAccuracy,
+          "nullDistrAcc.dat" = nullDistr
+        )
+        return(results)
+    })
+    return(crossVal.res)
+  }
+)
+```
+
+```{r, eval=FALSE, echo=FALSE}
+saveRDS(permutationResults, "~/DANL/SB/output/permutations/FINALgridCVPerm.rds")
+```
+```{r, eval=TRUE, echo=FALSE}
+permutationResults=readRDS("~/DANL/SB/output/permutations/FINALgridCVPerm.rds")
 ```
 
 ## Compile results:
@@ -196,7 +265,7 @@ pval = lapply(names(data_list), function(x) {
   # comparing the mean of all 1000 test-set accuracies to the mean (sorted) null distribution
   (1 + sum(masterNull > mean(accuracies[[x]]$estimate)))/(1 + n)
 })
-names(pval) = names(data)
+names(pval) = names(data_list)
 ```
 
 ## View the Results:
@@ -209,19 +278,19 @@ r=as.data.frame(list(#"data" = names(data_list),
                    "Null_Var" = round(sapply(nullDistr, var),4),
                    "p" = round(unlist(perm.pval),3),
                    "common.p" = round(unlist(pval),3)))
-#saveRDS(r, "~/DANL/SB/results/permutations/FINAL_resultstbl.rds")
+saveRDS(r, "~/DANL/SB/results/permutations/FINAL_resultstbl.rds")
 r
 ```
 
 # ROC curves for each:
-```{r}
+```{r, message=FALSE, results='hide'}
 # take the average prediction for each participant every time she was in the test set
-aggregatePreds = lapply(permutationResults, function(x) {
+aggregatePreds = mclapply(permutationResults, function(x) {
   d = Reduce("rbind", lapply(x, function(y) {y$predActual.dat}))
   out = d %>% group_by(IDENT_SUBID) %>%
     summarize(avgPred = mean(proba.pi))
   return(out)
-})
+}, mc.cores = (detectCores() - 1))
 #merge in the factor labels, coding PI as 1
 labels = readRDS("~/DANL/SB/wave1labels.rds")
 aggregatePreds = lapply(aggregatePreds, function(x) {
@@ -230,14 +299,14 @@ aggregatePreds = lapply(aggregatePreds, function(x) {
   merged = left_join(x, lbl)
 })
 names(aggregatePreds) = names(data_list)
-#saveRDS(aggregatePreds, "../../../output/permutations/aggregateProbaPIpreds.rds")
+saveRDS(aggregatePreds, "../../../output/permutations/aggregateProbaPIpreds.rds")
 ```
 
 ```{r, fig.width=10,fig.height=4.5, message=FALSE, results='hide'}
 #plot:
 #aggregatePreds = saveRDS("../../../output/permutations/aggregateProbaPIpreds.rds")
 par(mfrow = c(2, 4))
-pdf(height = 4.5)
+#pdf(height = 4.5)
 lapply(names(aggregatePreds), function(x) {
     plot(roc(predictor = aggregatePreds[[x]]$avgPred, response = aggregatePreds[[x]]$GROUP),
          xlim=c(1, 0), ylim = c(0, 1), main = x)
@@ -330,3 +399,5 @@ fMRI_plt
 ```{r, fig.width=10,fig.height=3}
 StrMRI_plt
 ```
+
+
