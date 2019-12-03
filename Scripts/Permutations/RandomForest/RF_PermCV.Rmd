@@ -3,9 +3,6 @@ title: "Random Forest Classification, Repeated Cross-Validation, & Permutation T
 author: "Ian Douglas"
 date: "11/28/2019"
 output:
-  pdf_document:
-    toc: yes
-    df_print: paged
   html_document:
     number_sections: yes
     toc: yes
@@ -13,20 +10,24 @@ output:
     toc_float:
       collapsed: no
       smooth_scroll: yes
+  pdf_document:
+    toc: yes
+    df_print: paged
 ---
-# Cross validation of models, and permutation testing for model accuracy metrics
+# Cross validation of random forest models, and permutation testing for model accuracy metrics
 ## Load packages
 ```{r, echo=TRUE, message=FALSE, results='hide'}
 require(tidyverse)
 require(randomForest)
 require(caret)
-require(beepr)
 require(doParallel)
 require(pROC)
 require(plotROC)
 ```
+
+```{r, echo=FALSE,eval=FALSE}
 ## Read in the data frames
-```{r}
+
 # functional conn. and dissim. data
 fdisBeta1 = readRDS('~/DANL/SB/data/processed/labelledFDissBeta1.rds')
 fcon = readRDS('~/DANL/SB/data/processed/labelledFCor.rds')
@@ -64,8 +65,12 @@ data_list = lapply(data_list, function(x) {
   return(x)
 })
 ```
+```{r, echo=FALSE}
+data_list = vector(mode = "list", length = 8)
+names(data_list) = c("FD","FC","FDPCA","FCPCA","Str","Str_noWBV","StrPCA","StrPCA_noWBV")
+```
 
-## Define the list of parameters for each model, based on results of 'rfGridSearchCV.rmd':
+## Define the list of parameters for each model, based on results of 'rfGridSearchCV.rmd' for each dataset:
 ```{r, eval=FALSE}
 param_list = list(
   "FD" = c("mtry"=2350,"ntree"=1501,"nodesize"= 7),
@@ -80,9 +85,9 @@ param_list = list(
 as.data.frame(param_list)
 ```
 
-# Get the "baseline" fits to generate OOB scores and variable importances.
+# Fit the "baseline" models to generate OOB scores and variable importances.
   This differs from the later models in that it conducts bagging, but not cross validation.
-```{r, eval=FALSE}
+```{r, eval=FALSE, message=FALSE, results='hide'}
 set.seed(111) # for reproducibility.
 bestForest.list = mclapply(X = names(data_list), FUN = function(x) {
   dat = data_list[[x]]; params = param_list[[x]]
@@ -101,76 +106,23 @@ bestForest.list = mclapply(X = names(data_list), FUN = function(x) {
 }, mc.cores = (detectCores() - 1))
 names(bestForest.list) = names(data_list)
 saveRDS(bestForest.list, "~/DANL/SB/output/RF/bestGridTunedRF.rds")
-# compile the OOB scores
+```
+
+### compile the OOB scores
+```{r,eval=FALSE}
 OOBs = sapply(bestForest.list, function(x) {
   sum(diag(x$confusion))/sum(x$confusion)
 })
 ```
-
-```{r, eval=FALSE,echo=FALSE}
-# RE-RUN ON THE TWO FUNCTIONAL PCA DATASETS
-
-# THEN INSERT INTO THE PERMUTATION RESULTS
-
-# THEN DELETE THIS CHUNK, RERUN ALL OTHER COMPUTATIONS USING `permutationResults`
-
-PCApermRedoResults = mclapply(X = c("FDPCA", "FCPCA"), mc.cores = detectCores() - 1, 
-  FUN = function(x) {
-    dat = data_list[[x]]; params = param_list[[x]]
-    # pre-proc
-    dat = na.omit(
-      select(dat, -one_of("age","IDENT_SUBID","SUBJECTID_long",
-                           "wave_to_pull", "cbcl_totprob_t")))
-    #train test split
-    dat$GROUP = factor(dat$GROUP)
-    index_pi = which(dat$GROUP == "PI"); index_comp = which(dat$GROUP !="PI")
-    train_i = replicate(n = 1000, simplify = FALSE, 
-                        expr=c(sample(index_pi,size=round(length(index_pi)*.75)),
-                               sample(index_comp,size=round(length(index_pi)*.75))))
-    crossVal.res = mclapply(X = train_i, mc.cores = detectCores() - 1, 
-      FUN = function(y) {
-        training = dat[y, ]; test = dat[-y, ]
-        fit = randomForest(GROUP ~ ., data = training,
-                           mtry = params[1],
-                           ntree = params[2],
-                           nodesize = params[3],
-                           strata = training$GROUP,
-                           sampsize = c(round(length(index_pi)*.75),
-                                        round(length(index_pi)*.75))
-        )
-        # get the predicted, actual, accuracy, and null dist of 1000 permuted accuracies
-        pred = factor(predict(fit, newdata = test), levels = c("COMP", "PI"))
-        actual = factor(test$GROUP, levels = c("COMP","PI"))
-        prob1 = predict(fit, newdata = test, type="prob")[,"PI"]
-        predActual.dat = as.data.frame(
-          list("IDENT_SUBID"=rownames(test), "pred"=pred, "actual"=actual, "proba.pi"=prob1)
-        )
-        crossValAccuracy = confusionMatrix(pred, actual)$overall["Accuracy"]
-        nullDistr = as.data.frame(list("nullAcc" = replicate(simplify = TRUE, n = 1000,
-          expr = confusionMatrix(pred, sample(actual))$overall["Accuracy"])
-        ))
-        results= list(
-          "predActual.dat" = predActual.dat,
-          "CV_Accuracy"=crossValAccuracy,
-          "nullDistrAcc.dat" = nullDistr
-        )
-        return(results)
-    })
-    return(crossVal.res)
-  }
-)
-names(PCApermRedoResults) <- c("FDPCA", "FCPCA")
-permutationResults <- readRDS("~/DANL/SB/output/permutations/FINALgridCVPerm.rds")
-names(permutationResults) <- names(data_list)
-permutationResults[["FDPCA"]] <- PCApermRedoResults[["FDPCA"]]
-permutationResults[["FCPCA"]] <- PCApermRedoResults[["FCPCA"]]
-# AND THEN OVERWRITE THE PREVIOUS RESULTS:
-saveRDS(permutationResults, "~/DANL/SB/output/permutations/FINALgridCVPerm.rds")
+```{r,echo=FALSE, eval=TRUE}
+rf.list = readRDS("~/DANL/SB/output/RF/bestGridTunedRF.rds")
+OOBs = sapply(rf.list, function(x) {
+  sum(diag(x$confusion))/sum(x$confusion)
+})
 ```
 
-# run function on all datasets
+# Run the cross-validation algorithm/permutation testing algorithm on all datasets
 ```{r, eval=FALSE}
-
 permutationResults = mclapply(X = names(data_list), mc.cores = detectCores() - 1, 
   FUN = function(x) {
     dat = data_list[[x]]; params = param_list[[x]]
@@ -247,6 +199,7 @@ nullDistr = lapply(permutationResults, function(x) {
   return(rowMeans(Reduce("cbind", tmp)))
 })
 names(nullDistr) = names(data_list)
+
 #create the average null distribution from all models and associated p vals
 masterNull = rowMeans(Reduce("cbind",nullDistr))
 
@@ -268,8 +221,8 @@ pval = lapply(names(data_list), function(x) {
 names(pval) = names(data_list)
 ```
 
-## View the Results:
-```{r}
+## Results:
+```{r,echo=FALSE,eval=FALSE}
 r=as.data.frame(list(#"data" = names(data_list),
                    "OOB_Acc" = round(OOBs,4),
                    "CV_Acc." = round(sapply(accuracies, function(x) x$estimate),4),
@@ -279,7 +232,16 @@ r=as.data.frame(list(#"data" = names(data_list),
                    "p" = round(unlist(perm.pval),3),
                    "common.p" = round(unlist(pval),3)))
 saveRDS(r, "~/DANL/SB/results/permutations/FINAL_resultstbl.rds")
-r
+```
+```{r}
+as.data.frame(list("OOB_Acc" = round(OOBs,4),
+                   "CV_Acc." = round(sapply(accuracies, function(x) x$estimate),4),
+                   "CV_Acc_Var" = round(sapply(accuracies, function(x) x$SD),4),
+                   "Null_Acc" = round(sapply(nullDistr, mean),4),
+                   "Null_Var" = round(sapply(nullDistr, var),4),
+                   "p" = round(unlist(perm.pval),3),
+                   "common.p" = round(unlist(pval),3)), 
+              row.names = names(data_list))
 ```
 
 # ROC curves for each:
@@ -299,12 +261,16 @@ aggregatePreds = lapply(aggregatePreds, function(x) {
   merged = left_join(x, lbl)
 })
 names(aggregatePreds) = names(data_list)
+```
+```{r,eval=FALSE,echo=FALSE}
 saveRDS(aggregatePreds, "../../../output/permutations/aggregateProbaPIpreds.rds")
 ```
 
+```{r, echo=FALSE,eval=TRUE}
+aggregatePreds = readRDS("../../../output/permutations/aggregateProbaPIpreds.rds")
+```
 ```{r, fig.width=10,fig.height=4.5, message=FALSE, results='hide'}
 #plot:
-#aggregatePreds = saveRDS("../../../output/permutations/aggregateProbaPIpreds.rds")
 par(mfrow = c(2, 4))
 #pdf(height = 4.5)
 lapply(names(aggregatePreds), function(x) {
@@ -348,9 +314,9 @@ saveRDS(StrMRI_plt_data, "../../../output/permutations/FINAL_STRMRIpermResults4p
 ```
 
 ```{r, eval=TRUE, echo=FALSE}
-perm_plt_data = readRDS("../../output/permutations/FINAL_permResults4plotting.rds")
-fMRI_plt_data = readRDS("../../output/permutations/FINAL_FMRIpermResults4plotting.rds")
-StrMRI_plt_data = readRDS("../../output/permutations/FINAL_STRMRIpermResults4plotting.rds")
+perm_plt_data = readRDS("../../../output/permutations/FINAL_permResults4plotting.rds")
+fMRI_plt_data = readRDS("../../../output/permutations/FINAL_FMRIpermResults4plotting.rds")
+StrMRI_plt_data = readRDS("../../../output/permutations/FINAL_STRMRIpermResults4plotting.rds")
 ```
 
 ## Generate plots
