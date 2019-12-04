@@ -2,10 +2,11 @@
 SB data analysis scripts and output.
 
 TO-DO now: 
-- decide one outcome for all different models.
-- DISCUSS: functional connectivity network plot by variable importance
-- DISCUSS: random forest with structural PCs
-- DISCUSS: cross validation on hold-out set
+- functional connectivity network plot by variable importance
+- Side by side boxplots
+- Fitting each model to the same resample.
+- Difference models: plot the difference in accuaracies.
+LATER:
 - DISCUSS: structural PCA loadings, and potentially redundant structural variables
 
 
