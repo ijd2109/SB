@@ -356,7 +356,7 @@ ggsave("../../../results/permutations/plots/fMRI_AccGridCV_FINALdensities.pdf",
        height = 3, width = 8, units = "in", device = "pdf")
 ggsave("../../../results/permutations/plots/StrMRI_AccGridCV_FINALdensities.pdf", 
          plot = StrMRI_plt,
-         height = 3, width = 6, units = "in", device = "pdf")
+         height = 3, width = 8, units = "in", device = "pdf")
 ```
 ## Plot each against the global null distribution for all models
 ```{r, fig.width=10,fig.height=3}
