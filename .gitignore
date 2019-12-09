@@ -9,6 +9,8 @@
 .Rproj
 # RStudio files
 .Rproj.user/
+# Mac defaults
+.DS_Store
 
 # data and docs
 SB/data
@@ -16,6 +18,7 @@ SB/documentation
 SB/meeting\ notes
 wave1labels.rds
 SB/output
+.pdf
 
 #manuscript
 SB/manuscript
