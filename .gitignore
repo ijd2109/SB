@@ -6,7 +6,7 @@
 # Session Data files
 .RData
 # project
-.Rproj
+SB.Rproj
 # RStudio files
 .Rproj.user/*
 # Mac defaults
@@ -17,6 +17,7 @@ data/*
 documentation/*
 meeting\ notes/*
 wave1labels.rds
+Scripts/Permutations/archive
 
 
 #manuscript
