@@ -8,17 +8,17 @@
 # project
 .Rproj
 # RStudio files
-.Rproj.user/
+.Rproj.user/*
 # Mac defaults
-.DS_Store
+results/.DS_Store
 
 # data and docs
-SB/data
-SB/documentation
-SB/meeting\ notes
+data/*
+documentation/*
+meeting\ notes/*
 wave1labels.rds
-SB/output
+
 
 #manuscript
-SB/manuscript
+manuscript/*
 .Rproj.user
