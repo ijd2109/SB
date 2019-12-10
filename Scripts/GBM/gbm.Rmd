@@ -14,7 +14,7 @@ output:
 ```{r}
 set.seed(111)
 require(xgboost)
-require(lime)
+#require(lime)
 require(tidyverse)
 require(doParallel)
 ```
@@ -24,21 +24,21 @@ require(doParallel)
 ## Read in the data frames
 
 # functional conn. and dissim. data
-fdisBeta1 = readRDS('~/DANL/SB/data/processed/labelledFDissBeta1.rds')
-fcon = readRDS('~/DANL/SB/data/processed/labelledFCor.rds')
+fdisBeta1 = readRDS('../../data/processed/labelledFDissBeta1.rds')
+fcon = readRDS('../../data/processed/labelledFCor.rds')
 # read in PCA data
-pc.fdBeta1 = readRDS('~/DANL/SB/data/processed/fdBeta1PCASCoresLbl.rds')
-pc.fc = readRDS('~/DANL/SB/data/processed/fcPCASCoresLbl.rds')
+pc.fdBeta1 = readRDS('../../data/processed/fdBeta1PCASCoresLbl.rds')
+pc.fc = readRDS('../../data/processed/fcPCASCoresLbl.rds')
 # note, each PCA required 35 dimensions to reach 80% variance explained.
 # Filter by that so that k is smaller than n (necessary because p was not smaller than n).
 topPC.fdBeta1 = pc.fdBeta1[ , -c(grep("^PC36$", names(pc.fdBeta1)):ncol(pc.fdBeta1))]
 topPC.fc = pc.fc[ , -c(grep("^PC36$", names(pc.fc)):ncol(pc.fc))]
 # structural data:
-StrData = readRDS("~/DANL/SB/data/processed/structuralLabelled.rds")
+StrData = readRDS("../../data/processed/structuralLabelled.rds")
 StrData_noWBV = select(StrData,-EstimatedTotalIntraCranialVol)
 # Now PCA
-StrPCA = readRDS("~/DANL/SB/data/processed/strPCAscoresLabelled.rds")
-StrPCA_noWBV = readRDS("~/DANL/SB/data/processed/strPCAscoresLabelled_noWBV.rds")
+StrPCA = readRDS("../../data/processed/strPCAscoresLabelled.rds")
+StrPCA_noWBV = readRDS("../../data/processed/strPCAscoresLabelled_noWBV.rds")
 # Put all the data into a named list:
 data_list = list(
   "FD" = fdisBeta1,
@@ -65,33 +65,75 @@ data_list = lapply(data_list, function(x) {
 names(data_list) = c("FD","FC","FDPCA","FCPCA","Str","Str_noWBV","StrPCA","StrPCA_noWBV")
 ```
 
-## Set up param grid
+
 ```{r}
-# create parameter list
-hyper_grid <- as.data.frame(t(expand.grid(
+hyper_grid <- expand.grid(
   eta = c(.01, .05, .1, .3),
   max_depth = c(1, 3, 5, 7),
-  min_child_weight = c(1, 3),
+  min_child_weight = c(1, 3, 5, 7),
   subsample = c(.65, .8, 1), 
-  colsample_bytree = c(.8, .9, 1)
-)))
+  colsample_bytree = c(.8, .9, 1),
+  optimal_trees = 0,               # a place to dump results
+  min_RMSE = 0                     # a place to dump results
+)
+```
+
+
+```{r}
+y_str = as.numeric(ifelse(data_list[["Str_noWBV"]]$GROUP=="PI",1,0))
+X_str = select(data_list[["Str_noWBV"]], -SUBJECTID_long, -age, -GROUP) %>%
+  as.matrix()
+```
+
+```{r}
+# just run on the structural data for now
+for(i in 1:nrow(hyper_grid)) {
+  
+  # create parameter list
+  params <- list(
+    eta = hyper_grid$eta[i],
+    max_depth = hyper_grid$max_depth[i],
+    min_child_weight = hyper_grid$min_child_weight[i],
+    subsample = hyper_grid$subsample[i],
+    colsample_bytree = hyper_grid$colsample_bytree[i]
+  )
+  
+  # reproducibility
+  set.seed(111)
+  
+  # train model
+  xgb.tune <- xgb.cv(
+    params = params,
+    data = X_str,
+    label = y_str,
+    nrounds = 5000,
+    nfold = 5,
+    metrics = list("auc"),
+    objective = "binary:logistic",
+    verbose = 0,               # silent,
+    early_stopping_rounds = 10 # stop if no improvement for 10 consecutive trees
+  )
+  
+  # add min training error and trees to grid
+ # hyper_grid$optimal_trees[i] <- which.min(xgb.tune$evaluation_log$test_rmse_mean)
+  #hyper_grid$min_RMSE[i] <- min(xgb.tune$evaluation_log$test_rmse_mean)
+}
 ```
 
 ## Define function to fit model
 ```{r}
-ExtremeGradientBooster = function(data) {}
-# 
+ExtremeGradientBooster = function(data) {
 xgb.fit3 <- xgb.cv(
   params = params,
   data = features_train,
   label = response_train,
   nrounds = 1000,
   nfold = 5,
-  objective = "binary:logistic", # for regression models
-  verbose = FALSE, # silent
+  objective = "binary:logistic", # classification
+  verbose = FALSE,
   early_stopping_rounds = 10 # stop if no improvement for 10 consecutive trees
 )
-
+}
 # assess results
 xgb.fit3$evaluation_log %>%
   dplyr::summarise(
