@@ -102,8 +102,5 @@ mean(
 ```
 
 
-```{r}
-ggplot() +
-  geom_boxplot(aes(x = GROUP, y = ))
-```
+
 
