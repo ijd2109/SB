@@ -1,59 +1,65 @@
----
-title: "gbm"
-author: "Ian Douglas"
-date: "12/8/2019"
-output:
-  html_document:
-    number_sections: yes
-    toc: yes
-    df_print: paged
-    toc_float:
-      collapsed: no
-      smooth_scroll: yes
----
-### Load packages; set seed for reproducibility.
-```{r}
+# set seed for reproudicibility.
 set.seed(111)
-require(xgboost)
-require(lime)
-require(tidyverse)
-require(MLmetrics)
-require(Ckmeans.1d.dp)
-```
+t1 = Sys.time()
+# Load (or install) required packages
+## xgboost
+if ("xgboost" %in% installed.packages()) {
+  library(xgboost)
+} else {
+  install.packages("xgboost")
+  library(xgboost, quietly = TRUE)
+}
+## Skip lime for now
+# if ("lime" %in% installed.packages()) {
+#   library(lime)
+# } else {
+#   install.packages("lime")
+#   library(lime)
+# }
+## tidyverse
+if ("tidyverse" %in% installed.packages()) {
+  library(tidyverse)
+} else {
+  install.packages("tidyverse")
+  library(tidyverse, quietly = TRUE)
+}
+## MLmetrics
+if ("MLmetrics" %in% installed.packages()) {
+  library(MLmetrics)
+} else {
+  install.packages("MLmetrics")
+  library(MLmetrics, quietly = TRUE)
+}
 
 ### Read in the structural data (has been more reliable in this sample)
-```{r}
 StrData = readRDS("../../data/processed/structuralLabelled.rds")
 StrData_noWBV = select(StrData,-EstimatedTotalIntraCranialVol)
-```
+
 ### Prepare the data for compatibility with `xgb.cv()`
-```{r}
 # Convert the GROUP variable to a dummy variable for the PI group
 y_str = as.numeric(ifelse(StrData_noWBV$GROUP =="PI",1,0))
 X_str = StrData_noWBV %>%
   select(-SUBJECTID_long, -age, -GROUP, -cbcl_totprob_t, -wave_to_pull) %>%
-  select_if(is.numeric) %>%
+  select_if(is.numeric) %>% # just a failsafe here.
   # Predictor variables are required to be in matrix form for xgboost package
   as.matrix()
-```
+
 
 # Make the param grid
-```{r, eval=FALSE}
 hyper_grid <- expand.grid(
   eta = c(.01, .05, .1, .3),
   max_depth = c(1, 3, 5, 7),
   min_child_weight = c(1, 3, 5, 7),
   subsample = c(.65, .8, 1), 
   colsample_bytree = c(.8, .9, 1),
-  optimal_trees = 0,               # a place to dump results
+  optimal_trees = 0, # a place to capture results
   max_AUC = 0,
-  min_logloss = 0# as place to dump results
+  min_logloss = 0 # a place to capture results
 )
-```
+
 
 # Run the loop (Grid Search)
-```{r, eval=FALSE}
-# just run on the structural data for now
+# (just run on the structural data for now)
 for(i in 1:nrow(hyper_grid)) {
   
   # create the unique parameter list for the i-th iteration
@@ -84,17 +90,14 @@ for(i in 1:nrow(hyper_grid)) {
   hyper_grid$max_AUC[i] <- max(xgb.tune$evaluation_log$test_auc_mean)
   hyper_grid$min_logloss[i] <- min(xgb.tune$evaluation_log$test_logloss_mean)
 }
-```
-```{r, echo=FALSE, eval=FALSE}
+
+
 # now has the results plugged in:
 saveRDS(hyper_grid, "../../output/GBM/hyperGrid_gbmResults.rds") 
-```
-```{r,echo=FALSE,eval=TRUE}
 gbm_res = readRDS("../../output/GBM/hyperGrid_gbmResults.rds")
-```
+
 
 # Fit the best XGB model for futher evaluation using LIME
-```{r, eval=FALSE}
 best_params = gbm_res[which.max(gbm_res$max_AUC), 1:5] %>% # select the 5 tuned params over
   do.call("list", .) # conver to list.
 # add the objective and link to the params
@@ -110,6 +113,7 @@ bestGBM = xgboost(
   verbose = 0,
   stratified = TRUE
 )
+
 #ANOTHER fit to the full sample: 
 ### use xgb.train() for compatibility (later) with lime()
 bestXGB_4LIME = xgb.train(
@@ -165,62 +169,19 @@ for (i in 1:B) {
   inds = c(sample(which(y_str==1), size = n_min, replace = TRUE),
            sample(which(y_str==0), size = n_min, replace = TRUE))
   fit = GBM(X = X_str[inds,], y = y_str[inds])
-  bootOut$inBag[i] = fit$best_score
+  bootOut$inBag_error[i] = fit$best_score
   pred = ifelse(predict(fit, newdata = X_str[-inds, ]) >= .5, 1, 0)
   cm = MLmetrics::ConfusionMatrix(pred, y_str[-inds])
-  bootOut$OOB[i] = 1 - sum(diag(cm))/sum(cm)
+  bootOut$OOB_error[i] = 1 - sum(diag(cm))/sum(cm)
 }
-```
-```{r, eval=FALSE, echo=FALSE}
+
+
 saveRDS(bestXGB_4LIME,"../../output/GBM/bestXG_trainFullSamp.rds")
 saveRDS(bestGBM,"../../output/GBM/bestGBM.rds")
 saveRDS(bootOut,"../../output/GBM/bootOutput.rds")
-saveRDS(crossValScore, "../../output/GBM_crossValScores.rds")
-```
-```{r, echo=FALSE, eval=TRUE}
-bestXGB_4LIME=readRDS("../../output/GBM/bestXG_trainFullSamp.rds")
-bestGBM=readRDS("../../output/GBM/bestGBM.rds")
-bootOut=readRDS("../../output/GBM/bootOutput.rds")
-crossValScore= readRDS("../../output/GBM/GBM_crossValScores.rds")
-```
+saveRDS(crossValScore, "../../output/GBM/GBM_crossValScores.rds")
 
-
-# Variable importances
-```{r}
-importance_matrix <- xgb.importance(model = bestGBM)
-xgb.ggplot.importance(importance_matrix, top_n = 20, n_clusters = 3, measure = "Gain")
-```
-```{r, echo=FALSE, eval=FALSE}
-pdf("../../results/GBM/plots/bestGBM_varImp.pdf",
-    height = 8, width = 11)
-xgb.ggplot.importance(importance_matrix, top_n = 20, n_clusters = 3, measure = "Gain")
-dev.off()
-```
-
-# Local Interpretation with LIME
-```{r}
-# select one random PI participant to examine
-set.seed(111)
-subj = sample(which(y_str == 1), size = 1)
-# supply the model matrix and the model:
-explainer = lime(as.data.frame(X_str), bestXGB_4LIME)
-# supply the data of the subject we are examining, the explainer object, and vars to explain:
-explanation = lime::explain(x = as.data.frame(X_str)[subj,], explainer = explainer,
-                      labels = y_str[subj], 
-                      # feature clusters 1 and 2
-                      n_features = 5)
-```
-```{r, echo = FALSE, eval=FALSE}
-# unhash if saving plot:
-# pdf(paste0("../../results/GBM/plots/localVarImp_subjPI_",subj,".pdf"),
-#     height = 11, width = 8)
-# plot_features(explanation)
-# dev.off()
-```
-
-```{r}
-plot_features(explanation = explanation)
-```
-
-
-
+print("Success")
+Sys.time()
+duration = Sys.time() - t1
+print(paste0("duration: ", duration))
