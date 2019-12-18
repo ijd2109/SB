@@ -105,7 +105,7 @@ bestForest.list = mclapply(X = names(data_list), FUN = function(x) {
                        importance = TRUE)
 }, mc.cores = (detectCores() - 1))
 names(bestForest.list) = names(data_list)
-saveRDS(bestForest.list, "~/DANL/SB/output/RF/bestGridTunedRF.rds")
+saveRDS(bestForest.list, "../../../output/RF/bestGridTunedRF.rds")
 ```
 
 ### compile the OOB scores
@@ -245,7 +245,7 @@ as.data.frame(list("OOB_Acc" = round(OOBs,4),
 ```
 
 # ROC curves for each:
-```{r, message=FALSE, results='hide'}
+```{r, warning=FALSE, message=FALSE, results='hide'}
 # take the average prediction for each participant every time she was in the test set
 aggregatePreds = mclapply(permutationResults, function(x) {
   d = Reduce("rbind", lapply(x, function(y) {y$predActual.dat}))
@@ -254,7 +254,7 @@ aggregatePreds = mclapply(permutationResults, function(x) {
   return(out)
 }, mc.cores = (detectCores() - 1))
 #merge in the factor labels, coding PI as 1
-labels = readRDS("~/DANL/SB/wave1labels.rds")
+labels = readRDS("~/DANL/SB/ianMasters/wave1labels.rds")
 aggregatePreds = lapply(aggregatePreds, function(x) {
   lbl = select(labels, IDENT_SUBID, GROUP) %>%
     mutate_at("GROUP", ~factor(ifelse(.=="PI", 1, 0)))
