@@ -32,8 +32,8 @@ require(plotROC)
 fdisBeta1 = readRDS('~/DANL/SB/data/processed/labelledFDissBeta1.rds')
 fcon = readRDS('~/DANL/SB/data/processed/labelledFCor.rds')
 # read in PCA data
-pc.fdBeta1 = readRDS('~/DANL/SB/data/processed/fdBeta1PCASCoresLbl.rds')
-pc.fc = readRDS('~/DANL/SB/data/processed/fcPCASCoresLbl.rds')
+pc.fdBeta1 = readRDS('~/DANL/SB/data/processed/fdBeta1PCAScoresLbl.rds')
+pc.fc = readRDS('~/DANL/SB/data/processed/fcPCAScoresLbl.rds')
 # note, each PCA required 35 dimensions to reach 80% variance explained.
 # Filter by that so that k is smaller than n (necessary because p was not smaller than n).
 topPC.fdBeta1 = pc.fdBeta1[ , -c(grep("^PC36$", names(pc.fdBeta1)):ncol(pc.fdBeta1))]
