@@ -40,16 +40,16 @@ vimPlot <- function(model, num.vars = 30, fillcolor = 'lightgreen', return.imps 
     # Unscale them to units of % change in MSE (regression), or % Accuracy (classification)
     # or % change in Gini if classification AND importance was not set to TRUE in function call
     rowwise() %>%
-    mutate_at(nm, ~ ifelse(!is.null(model$importanceSD), . * impSD, .)) %>%
+    mutate_at(nm, ~ifelse(!is.null(model$importanceSD), . * impSD, .)) %>%
     ungroup() %>%
-    arrange(desc(!!!select(., nm))) %>%
+    arrange_at(nm, ~desc(.)) %>% # importance is (necessarily) the first column
     # select the desired number of variables
     slice(1:ifelse(num.vars=="all", nrow(.), num.vars))
   
   # set the variable labels for plotting aesthetics
   impFrame = impFrame %>%
     mutate(variable = factor(impFrame$variable, levels = rev(impFrame$variable)),
-           importance = unlist(select(., nm)))
+           importance = unlist(select(., all_of(nm))))
   
   # generate plot:
   plt = ggplot(impFrame) + 

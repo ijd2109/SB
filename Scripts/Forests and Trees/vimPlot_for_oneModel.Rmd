@@ -1,0 +1,82 @@
+---
+title: "Variable Importance Plots"
+author: "Ian Douglas"
+date: "3/4/2020"
+output: 
+  html_document:
+    code_folding: hide
+---
+```{r, eval=TRUE, echo=FALSE, message=FALSE, results='hide'}
+library(tidyverse)
+library(randomForest)
+knitr::opts_chunk$set(fig.width = 15, fig.height = 15)
+```
+
+```{r, eval=TRUE, echo=FALSE}
+# the best model:
+rf_fc_best_str_adj = readRDS("~/DANL/SB/ianMasters/output/RF/rf_fc_best_str_adj_notFC.rds")
+rf_FC_STR_adjusted = readRDS("../../output/RF/all_adjusted_FC_STR_RF.rds")
+rf_STR_adjusted_FCnot = readRDS("../../output/RF/str_adjusted_FC_STR_RF.rds")
+rf_adjusted_list = readRDS("../../output/RF/adjusted_rfModels.rds")
+```
+
+## Variable importance plots
+### First for the best overall model,
+This model was built using the best variables (based on their variable importance) from the random forest model predicting group only from the functional connectivity data alone.
+
+These best features were then fed into a new model, in which age and sex adjusted structural data were included as predictors, and the model classified group.
+```{r}
+# First compute the Area under the Receiver-Operator Curve
+rf_fc_best_str_adj_OOB_AUC = MLmetrics::AUC(
+  y_pred= predict(rf_fc_best_str_adj, type="prob")[,"PI"], # probability predicted PI
+  y_true = ifelse(rf_fc_best_str_adj$y=="PI", 1, 0) # actual group classification
+)
+## Also calculate the accuracy of the model
+rf_fc_best_str_adj_OOB_Accuracy = MLmetrics::Accuracy(
+  rf_fc_best_str_adj$predicted, rf_fc_best_str_adj$y
+)
+
+# extract the variable importances
+rf_fc_best_str_adj_imps = data.frame(stringsAsFactors = FALSE,
+  "var" = rownames(importance(rf_fc_best_str_adj)),
+  as.data.frame(importance(rf_fc_best_str_adj))) %>%
+  arrange(desc(MeanDecreaseAccuracy)) %>%
+  # min-max scale the importance column between 0 and 100
+  mutate_at(vars(MeanDecreaseAccuracy), 
+    ~(((100+.) - min((100+.))) / (max((100+.)) - min((100+.))))*100
+  ) %>%
+  # create a ratio importance score:
+  #### Will be used to color code the variables later
+  mutate(LocalImpRatio = scale(PI)/scale(COMP)) %>%
+# scale all the importances (between 0 and 1)
+  mutate_at(vars(COMP, PI, LocalImpRatio), ~((. - min(.)) / (max(.) - min(.))))
+
+# re-order the variable column for plotting purposes.
+resorted_names = unlist(
+  arrange(rf_fc_best_str_adj_imps, desc(MeanDecreaseAccuracy))$var
+)
+# sort the names for plotting purposes (most important to least):
+rf_fc_best_str_adj_imps = rf_fc_best_str_adj_imps %>%
+  mutate_at(vars(var), ~factor(., levels = rev(resorted_names)))
+
+# prepare graph
+rf_fc_best_str_adj_vimPlot = ggplot(data = rf_fc_best_str_adj_imps) +
+  geom_bar(aes(y = MeanDecreaseAccuracy, 
+               x= var, 
+               fill=LocalImpRatio), 
+           stat = 'identity') +
+  scale_fill_gradient2(low = 'orange', 
+                       high = 'blue', 
+                       mid = 'white',
+                       midpoint = .5, 
+                       limit = c(0, 1),
+                       name="Relative (more)\n importance to\n PI over COMP") +
+  ggtitle("Variable Importances classifiying group from best FC features & brain vol.",
+          subtitle = 
+            paste0("OOB-AUC = ",round(rf_fc_best_str_adj_OOB_AUC,digits=2),
+                   "\nOOB-Accuracy = ", 100*round(rf_fc_best_str_adj_OOB_Accuracy,4),"%")) +
+  ylab("Importance (scaled between 0 and 100)") + xlab(NULL) +
+  coord_flip()
+# Show graph
+rf_fc_best_str_adj_vimPlot
+```

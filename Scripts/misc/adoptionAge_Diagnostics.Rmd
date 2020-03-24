@@ -1,0 +1,195 @@
+---
+title: "Analysis of Deviation from Structural Brain Volume Centroids"
+author: "Ian J. Douglas"
+date: "3/2/2020"
+output: html_document
+---
+
+# Distributions of structural brain volume
+Examine the covariance of age, age of adoption,and group classification with predictor features
+```{r, results='hide', warning=FALSE, message=FALSE}
+if (isFALSE(require(tidyverse))) {install.packages("tidyverse"); library(tidyverse)} else library(tidyverse)
+```
+
+### load the master data frame (containing adoption age)
+```{r}
+# This data will read in with the object name "master_SB" in the environment
+load(
+  "../../data/raw/3_ALL_long_cort_symptoms_brain_structure_function_epi_ages4-19_2019-05-15.Rdata"
+)
+# Read in the structural data
+strData = readRDS("../../data/processed/structuralLabelled.rds") %>%
+# retain only the complete cases (with respect to these structural data; ignoring some labels in filtering)
+  filter(., complete.cases(select(.,
+    -one_of("IDENT_SUBID","GROUP", "age", "SUBJECTID_long", "wave_to_pull", "cbcl_totprob_t"))))
+```
+
+## compute everyone's distance from the structural centroid
+Taking into account each structural feature simultaneously, compute the centroid vector of the multivariate cloud of structural features.
+```{r}
+# Here we compute the centroid of the structural data (for the whole population):
+str_unadj_centroid = strData %>% 
+  # deselect some labels in the dataset
+  select(-one_of("IDENT_SUBID","GROUP", "age", "SUBJECTID_long", "wave_to_pull", "cbcl_totprob_t")) %>%
+  summarize_all(~mean(., na.rm = TRUE))
+
+# for each subject, compute the distance between their row vector of the same variables, and the centroid
+deviation = rep(NA, times = nrow(strData))
+for (i in 1:nrow(strData)) {
+  dat = rbind(strData[i, names(str_unadj_centroid)],
+              str_unadj_centroid)
+  if (all(!is.na(dat))) {
+    dist = as.numeric(dist(as.matrix(dat), method = 'euc')) # use euclidean distance
+    deviation[i] = dist
+  }
+}
+```
+
+### prepare the data for plotting; plot:
+```{r}
+plt_dat = cbind(select(strData, GROUP,age), 
+                data.frame(dist = deviation))
+ggplot(data=plt_dat, aes(x = dist)) +
+  geom_histogram(aes(y = ..density.., fill = GROUP), 
+                 binwidth=density(na.omit(plt_dat$dist))$bw) +
+  ggtitle("Histogram of Euclidean Distances from Population Centroid within each Group") +
+  theme(title = element_text(hjust = .5))
+```
+
+## Predict deviation from covariates
+### Predict deviation from centroid with age, group, and their interaction as covariates
+```{r}
+# relationship in the aggregate:
+summary(lm(dist ~ age * GROUP, data = plt_dat))
+```
+
+No significant main effect was found for age, though an interaction and group effect persist.
+
+### Simple main effects within the PI group:
+```{r}
+summary(lm(dist ~ age, data = plt_dat[plt_dat$GROUP=="PI",]))
+```
+
+### Simple main effects within the COMP group:
+```{r}
+summary(lm(dist ~ age, data = plt_dat[plt_dat$GROUP=="COMP",]))
+```
+
+## Now compute centroids within each group, repeat deviation analyses
+```{r}
+comp_str_unadj_centroid = strData %>%
+  filter(GROUP=="COMP") %>%
+  select(-one_of("IDENT_SUBID","GROUP", "age", "SUBJECTID_long", "wave_to_pull", "cbcl_totprob_t")) %>%
+  summarize_all(~mean(., na.rm = TRUE))
+
+# compute the distances for each comp participant to their group's centroid
+comp_deviation = rep(NA, times = nrow(strData))
+
+for (i in grep("COMP", strData$GROUP)) {
+  dat = rbind(strData[i, names(comp_str_unadj_centroid)],
+              comp_str_unadj_centroid)
+  if (all(!is.na(dat))) {
+    dist = as.numeric(dist(as.matrix(dat), method = 'euc'))
+    comp_deviation[i] = dist
+  }
+}
+
+# and for PI group:
+pi_str_unadj_centroid = strData %>%
+  filter(GROUP=="PI") %>%
+  select(-one_of("IDENT_SUBID","GROUP", "age", "SUBJECTID_long", "wave_to_pull", "cbcl_totprob_t")) %>%
+  summarize_all(~mean(., na.rm = TRUE))
+
+pi_deviation = rep(NA, times = nrow(strData))
+
+for (i in grep("PI", strData$GROUP)) {
+  dat = rbind(strData[i, names(pi_str_unadj_centroid)],
+              pi_str_unadj_centroid)
+  if (all(!is.na(dat))) {
+    dist = as.numeric(dist(as.matrix(dat), method = 'euc'))
+    pi_deviation[i] = dist
+  }
+}
+```
+
+### Plot the group means, and within-group distances from own-group centroids
+```{r, message=FALSE}
+barplot_dat = data.frame(Group = c("PI","COMP"), rbind(pi_str_unadj_centroid, comp_str_unadj_centroid))
+grp_plt_dat = cbind(
+  select(strData, GROUP,age), 
+  data.frame(dist = deviation, comp_dist=comp_deviation, pi_dist=pi_deviation)
+) %>%
+  mutate(withinGroupDeviation = coalesce(comp_dist, pi_dist))
+
+# equivalent to gather(barplot_dat, key="variable", value="value",-Group) %>%
+pivot_longer(barplot_dat, cols = -Group, names_to = "variable", values_to = "value") %>%
+  ggplot(data = .) +
+  geom_bar(aes(x=variable, y = value, fill = Group), stat="identity", position ='dodge') +
+  facet_wrap(~variable, scales = 'free') +
+  ggtitle("Group means for each structural variable") +
+  theme(title = element_text(hjust=.5)) +
+  xlab(label = NULL) + ylab(label = NULL) +
+  labs(caption = "Generally, PI group have lower mean structural volume, with some exceptions")
+#density plot
+ggplot(grp_plt_dat, aes(x = withinGroupDeviation)) +
+  geom_histogram(aes(y = ..density.. ,fill=GROUP)) +
+  ggtitle("Histogram of Euclidean Distances from one's own group's Centroid by Group")  +
+  theme(title = element_text(hjust=.5))
+```
+
+### Linear model predicting within-group deviation from age
+```{r}
+summary(lm(withinGroupDeviation ~ age, data = grp_plt_dat))
+```
+
+### add interaction term with Group
+```{r}
+summary(lm(withinGroupDeviation ~ age*GROUP, data = grp_plt_dat))
+```
+
+### No main effect, so check simple effects within each group
+#### PIs:
+```{r}
+summary(lm(withinGroupDeviation ~ age, data = grp_plt_dat[grp_plt_dat$GROUP=="PI",]))
+```
+#### COMPs:
+```{r}
+summary(lm(withinGroupDeviation ~ age, data = grp_plt_dat[grp_plt_dat$GROUP=="COMP",]))
+```
+
+
+## Now with age of adoption as the IV
+### Plots:
+```{r}
+ageadopt_plt_dat = cbind(
+  select(strData, IDENT_SUBID, GROUP, age), 
+  data.frame(dist = deviation, comp_dist=comp_deviation, pi_dist=pi_deviation)
+) %>%
+  mutate(withinGroupDeviation = coalesce(comp_dist, pi_dist)) %>%
+  filter(GROUP=="PI") %>% select(-dist:-pi_dist) %>%
+  merge(
+    .,
+    monster_SB %>% filter(!duplicated(IDENT_SUBID)) %>% select(IDENT_SUBID, AGEADOPT),
+    by = "IDENT_SUBID", all.y = FALSE
+  ) %>%
+  # finally, retain only participants who have completed age of adoption data:
+  filter(., complete.cases(select(., AGEADOPT)))
+# fit the model:
+ageadopt_mod = lm(scale(withinGroupDeviation) ~ AGEADOPT, data = ageadopt_plt_dat)
+
+ggplot(data = ageadopt_plt_dat, aes(x=AGEADOPT, y=withinGroupDeviation)) +
+  geom_point() +
+  #stat_summary(fun.data=mean_cl_normal) +
+  geom_smooth(method='lm', formula= y~x) +
+  ggtitle("Relationship between age of adoption, and distance from one's own group's centroid",
+          subtitle = paste0("slope=",round(ageadopt_mod$coefficients[2], 4)," (n.s.)")) +
+  theme(title = element_text(hjust = .5))
+```
+
+### Linear model results:
+#### Note: the scaled Euclidean distance is predicted.
+```{r}
+summary(ageadopt_mod)
+```
+
+
