@@ -8,13 +8,11 @@
 
 vimPlot <- function(model, num.vars = 30, fillcolor = 'lightgreen', return.imps = FALSE, ...) {
   # `...` arguments are passed to ggplot() + theme(...)
-  if (!exists("importance", where = model)) {
-    stop("This model was not run using 'importance=TRUE' and has no importance component")
-  }
+  
   # Use randomForest::importance to extract the variable importances
   impFrame = as.data.frame(randomForest::importance(model))
   
-  # Based upon the type of model, assign customize desired variable importance the name "importance"
+  # Based upon the model type, extract different types of importance values
   if (model$type == "classification") {
     if (is.null(model$importanceSD)) {
       nm <- "MeanDecreaseGini"; y.lab <- "Gini_Importance"
