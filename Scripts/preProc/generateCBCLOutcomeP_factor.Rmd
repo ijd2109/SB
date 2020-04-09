@@ -1,0 +1,151 @@
+---
+title: "generate_cbcl_outcome_P_factor"
+author: "Ian Douglas"
+date: "4/5/2020"
+output: html_document
+---
+### load required packages
+```{r, results='hide', message=FALSE, warning=FALSE}
+rm(list=ls())
+if(!require(tidyverse)){install.packages("tidyverse")}; library(tidyverse)
+```
+
+### Read in the labels indicating which wave each participant has brain data from
+```{r}
+labels <- readRDS("../../data/labels/wave1Labels.rds")
+```
+### Read in the master data frame with survey variables
+```{r}
+load( # THIS LOADS AN OBJECT CALLED 'monster_SB'
+  "../../data/raw/3_ALL_long_cort_symptoms_brain_structure_function_epi_ages4-19_2019-05-15.Rdata"
+)
+```
+
+# Extract CBCL variables from the correct timepoint by subject
+```{r, eval=FALSE, warnings=FALSE}
+# (1) - select total score for all subscales of the CBCL; and the total score total sum
+cbcl_TOT = monster_SB %>% 
+  arrange(IDENT_SUBID, index_wave) %>% 
+  select(IDENT_SUBID, index_wave, which(
+    grepl("^CBCL_4_", names(.)) & # CBCL
+      grepl("_TOT$|_TOT_FU1$|_TOT_FU2$", names(.)) & # TOTAL Score (any timepoint)
+      grepl("_ACT_|_SOC_|_SCHOOL_|_WITHDR_|_SOMCOMPL_|_ANXDEPR_|_SOCPROB_|
+            _THOUPROB_|_ATTPROB_|_DELBEH_|_AGGRBEH_|_INTERNPROB_|_EXTERNPROB_|_TOTPROB_", 
+      names(.))
+  )) %>%
+  mutate_at(vars(IDENT_SUBID), ~as.character(.))
+# (2) - select T-score columns from the data
+cbcl_T = monster_SB %>% 
+  arrange(IDENT_SUBID, index_wave) %>% 
+  select(IDENT_SUBID, index_wave, which(
+    grepl("^CBCL_4_", names(.)) & # CBCL
+      grepl("_T$|_T_FU1$|_T_FU2$", names(.)) & # T-Score (any timepoint)
+      grepl("_ACT_|_SOC_|_SCHOOL_|_WITHDR_|_SOMCOMPL_|_ANXDEPR_|_SOCPROB_|
+            _THOUPROB_|_ATTPROB_|_DELBEH_|_AGGRBEH_|_INTERNPROB_|_EXTERNPROB_|_TOTPROB_", 
+      names(.))
+  )) %>%
+  mutate_at(vars(IDENT_SUBID), ~as.character(.))
+
+# The data are both in a semi wide/long format:
+### A column exists for each (theoretical) timepoint X variable;
+### Rows only exist, however, if a subject X timepoint combinaton was actually observed
+# (3) - create 3 rows for each subject and then collapse columns across survey question to put it into true long format
+cbclNewTOT <- map_dfr(unique(cbcl_TOT$IDENT_SUBID), function(x){
+  cbcl_data = cbcl_TOT %>% filter(!duplicated(IDENT_SUBID), IDENT_SUBID == x) %>% 
+    select(contains("cbcl", ignore.case = T))
+  df = data.frame(
+    stringsAsFactors = F,
+    IDENT_SUBID = x,
+    index_wave = 1:3,
+    # take the three wide columns of each subscale, and put them into one long column:
+    CBCL_ACT_TOT = unlist(cbcl_data %>% select(starts_with("CBCL_4_ACT_"))),
+    CBCL_SOC_TOT = unlist(cbcl_data %>% select(starts_with("CBCL_4_SOC_"))),
+    CBCL_SCHOOL_TOT = unlist(cbcl_data %>% select(starts_with("CBCL_4_SCHOOL_"))),
+    CBCL_WITHDR_TOT = unlist(cbcl_data %>% select(starts_with("CBCL_4_WITHDR_"))),
+    CBCL_SOMCOMPL_TOT = unlist(cbcl_data %>% select(starts_with("CBCL_4_SOMCOMPL_"))),
+    CBCL_ANXDEPR_TOT = unlist(cbcl_data %>% select(starts_with("CBCL_4_ANXDEPR_"))),
+    CBCL_SOCPROB_TOT = unlist(cbcl_data %>% select(starts_with("CBCL_4_SOCPROB_"))),
+    CBCL_ATTPROB_TOT = unlist(cbcl_data %>% select(starts_with("CBCL_4_ATTPROB_"))),
+    CBCL_DELBEH_TOT = unlist(cbcl_data %>% select(starts_with("CBCL_4_DELBEH_"))),
+    CBCL_AGGRBEH_TOT = unlist(cbcl_data %>% select(starts_with("CBCL_4_AGGRBEH_"))),
+    CBCL_INTERNPROB_TOT = unlist(cbcl_data %>% select(starts_with("CBCL_4_INTERNPROB_"))),
+    CBCL_EXTERNPROB_TOT = unlist(cbcl_data %>% select(starts_with("CBCL_4_EXTERNPROB_"))),
+    CBCL_TOTPROB_TOT = unlist(cbcl_data %>% select(starts_with("CBCL_4_TOTPROB_")))
+  ) %>%
+    remove_rownames()
+  if (nrow(df) != 3) {stop(paste0("nrow is ", nrow(df), " ",df[1,1]))} else df
+})
+
+cbclNewT <- map_dfr(unique(cbcl_T$IDENT_SUBID), function(x){
+  cbcl_data = cbcl_T %>% filter(!duplicated(IDENT_SUBID), IDENT_SUBID == x) %>% 
+    select(contains("cbcl", ignore.case = T))
+  df = data.frame(stringsAsFactors = F,
+    IDENT_SUBID = x,
+    index_wave = 1:3,
+    # take the three wide columns of each subscale, and put them into one long column:
+    CBCL_ACT_T = unlist(cbcl_data %>% select(starts_with("CBCL_4_ACT_"))),
+    CBCL_SOC_T = unlist(cbcl_data %>% select(starts_with("CBCL_4_SOC_"))),
+    CBCL_SCHOOL_T = unlist(cbcl_data %>% select(starts_with("CBCL_4_SCHOOL_"))),
+    CBCL_WITHDR_T = unlist(cbcl_data %>% select(starts_with("CBCL_4_WITHDR_"))),
+    CBCL_SOMCOMPL_T = unlist(cbcl_data %>% select(starts_with("CBCL_4_SOMCOMPL_"))),
+    CBCL_ANXDEPR_T = unlist(cbcl_data %>% select(starts_with("CBCL_4_ANXDEPR_"))),
+    CBCL_SOCPROB_T = unlist(cbcl_data %>% select(starts_with("CBCL_4_SOCPROB_"))),
+    CBCL_ATTPROB_T = unlist(cbcl_data %>% select(starts_with("CBCL_4_ATTPROB_"))),
+    CBCL_DELBEH_T = unlist(cbcl_data %>% select(starts_with("CBCL_4_DELBEH_"))),
+    CBCL_AGGRBEH_T = unlist(cbcl_data %>% select(starts_with("CBCL_4_AGGRBEH_"))),
+    CBCL_INTERNPROB_T = unlist(cbcl_data %>% select(starts_with("CBCL_4_INTERNPROB_"))),
+    CBCL_EXTERNPROB_T = unlist(cbcl_data %>% select(starts_with("CBCL_4_EXTERNPROB_"))),
+    CBCL_TOTPROB_T = unlist(cbcl_data %>% select(starts_with("CBCL_4_TOTPROB_")))
+  ) %>%
+    remove_rownames()
+  if (nrow(df) != 3) {stop(paste0("nrow is ", nrow(df), " ",df[1,1]))} else df
+})
+
+# Join them together
+cbclMaster <- left_join(cbclNewTOT, cbclNewT, all=TRUE, by = c("IDENT_SUBID", "index_wave"))
+
+## Merge in the group, age, and gender columns
+cbclMaster <- merge(cbclMaster, 
+                    monster_SB %>% select(IDENT_SUBID, index_wave, age, gender, GROUP),
+                    by = c("IDENT_SUBID","index_wave"), all=TRUE) %>%
+  select(IDENT_SUBID, index_wave, age, gender, GROUP, everything())
+```
+
+# P-factor adjust the subscale totals and t-scores
+## Use the total score version of each as the inputs in the regression
+```{r}
+# first for totals
+cbclMaster_TOT <- cbclMaster %>%
+  select(IDENT_SUBID:GROUP, ends_with("_TOT"))
+X_TOT <- cbclMaster_TOT$CBCL_TOTPROB_TOT
+cbclMaster_TOT_adjusted <- map_dfc(
+  names(cbclMaster_TOT %>% select(-IDENT_SUBID:-GROUP, -CBCL_TOTPROB_TOT)), function(nm) {
+  rows <- which(paste0(cbclMaster_TOT$IDENT_SUBID,"_", cbclMaster_TOT$index_wave) %in% labels$uniq_key)
+  y <- cbclMaster_TOT[rows, nm]; x <- X_TOT[rows]
+  adjusted <- resid(lm(y ~ x))
+  out <- suppressWarnings(replace(rep(NA, times = nrow(cbclMaster_TOT)), rows, adjusted))
+  out
+})
+names(cbclMaster_TOT_adjusted) <- paste0(names(cbclMaster_TOT %>% select(-IDENT_SUBID:-GROUP, -CBCL_TOTPROB_TOT)),
+                                       "_pFactAdjusted")
+# Do the same for the T scores
+cbclMaster_T <- cbclMaster %>%
+  select(IDENT_SUBID:GROUP, ends_with("_T"))
+X_T <- cbclMaster_T$CBCL_TOTPROB_T
+cbclMaster_T_adjusted <- map_dfc(
+  names(cbclMaster_T %>% select(-IDENT_SUBID:-GROUP, -CBCL_TOTPROB_T)), function(nm) {
+  rows <- which(paste0(cbclMaster_T$IDENT_SUBID,"_", cbclMaster_T$index_wave) %in% labels$uniq_key)
+  y <- cbclMaster_T[rows, nm]; x <- X_T[rows]
+  adjusted <- resid(lm(y ~ x))
+  out <- suppressWarnings(replace(rep(NA, times = nrow(cbclMaster_T)), rows, adjusted))
+  out
+})
+names(cbclMaster_T_adjusted) <- paste0(names(cbclMaster_T %>% select(-IDENT_SUBID:-GROUP, -CBCL_TOTPROB_T)),
+                                       "_pFactAdjusted")
+view(cbind(cbclMaster, cbclMaster_T_adjusted, cbclMaster_TOT_adjusted))
+```
+```{r, echo=FALSE, eval=FALSE}
+# Save the cbcl data in true long format
+saveRDS(cbind(cbclMaster, cbclMaster_T_adjusted, cbclMaster_TOT_adjusted), 
+        "../../data/processed/rawTotals_T-scores_andAdjusted_CBCL_labelledLong.rds")
+```

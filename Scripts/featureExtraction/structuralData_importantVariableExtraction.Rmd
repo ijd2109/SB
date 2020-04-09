@@ -1,0 +1,169 @@
+---
+title: "Structural Data: Importance-Based Variable Selection"
+author: "Ian Douglas"
+date: "4/8/2020"
+output: html_document
+---
+### Loading packages
+```{r, results='hide', warning=FALSE, message=FALSE}
+library(tidyverse)
+```
+### source helper function
+```{r}
+source("../../Scripts/misc/descending_rank.R")
+source("../../Scripts/misc/min_max.R")
+```
+
+# Subset set of segmented structural features of non-overlapping regions
+### Read in:
+    1. The repeated test-set AUC-based VI cross validation with the structural volume predictors
+    2. The corresponding dataset on which variable ranking was conducted
+```{r, collapse=TRUE}
+classificationResults_segSubset <- readRDS(
+  "../../output/featureExtraction/segmentationSubset_testSetVarImp_results.rds")
+adjStr_segSubset <- readRDS("../../data/processed/adjustedStructural_segmentationSubset_2020-04-08.rds")
+```
+
+## Extract OOB AUC scores
+There is only one per seed (forest) because this was generated using the predict() function on the fully built forest
+```{r}
+OOB_AUCs_segSubset <- sapply(classificationResults_segSubset, function(seed) seed$oob.Score)
+```
+## Extract the test-set AUCs by aggregating each tree's test-set AUC
+This requires aggregating because the test-set AUC was computed seperatly at each tree,  to the same test set.
+```{r}
+crossValTest_AUCs_perSeed_segSubset <- sapply(
+  X = classificationResults_segSubset,
+  FUN = function(seed) {
+    bagged_testsetAUC = mean(sapply(seed$forest, function(tree) {
+      tree$auc # this is test-set AUC
+    }))
+  bagged_testsetAUC
+})
+```
+## Quick plot of the distribution of out-of-bag and test-set AUCs
+```{r, fig.asp=.38, fig.width=16}
+ggplot(rbind(data.frame("source" = "OOB", "AUC" = OOB_AUCs_segSubset),
+             data.frame("source" = "CV", AUC = crossValTest_AUCs_perSeed_segSubset))) + 
+  geom_density(aes(x = AUC, fill = source), alpha = .65) +
+  theme_linedraw()
+```
+
+## Variable Ranking
+    1. Within each forest, rank the variables by the absolute value of their importances
+    2. Average these ranks across all seeds
+```{r}
+### First extract the variable importances for each variable, within each seed/forest
+impFrame_wide_segSubset <- reduce(
+  map(classificationResults_segSubset, function(seed) {
+    imps = sapply(seed$testSetImportance, function(var) var$AUC_VIM)
+    data.frame("var" = names(seed$testSetImportance), "importance" = imps)
+    }),
+  left_join, by = "var"
+)
+names(impFrame_wide_segSubset)[-1] <- paste0("importance_", grep("imp",names(impFrame_wide_segSubset[-1])))
+### Compute the repeated cross-validation importance by averaging over all seeds
+impFrame_wide_segSubset$avgTestSetImp <- rowMeans(
+  impFrame_wide_segSubset[grep("imp", names(impFrame_wide_segSubset))]
+)
+### Compute the absolute ranks,and average absolute importance
+impFrame_wide_segSubset$avgAbsImportance <- rowMeans(
+  mutate_all(impFrame_wide_segSubset[grep("imp", names(impFrame_wide_segSubset))], abs)
+)
+impFrame_wide_segSubset$avgAbsRank <- rowMeans(
+  mutate_all(impFrame_wide_segSubset[grep("^imp", names(impFrame_wide_segSubset))],
+             ~descending_rank(abs(.)))
+)
+
+## sort the data frame for plotting purposes
+impFrame_wide_segSubset <- impFrame_wide_segSubset %>%
+  arrange(desc(avgAbsImportance)) %>%
+  mutate_at("var", ~factor(., levels = rev(.)))
+```
+
+## View the variable importances
+```{r}
+ggplot(impFrame_wide_segSubset) +
+  geom_col(aes(x = var, y = avgAbsImportance, fill = avgAbsRank)) +
+  scale_fill_gradient(low = "#00906f", high = "#ffbc00", 
+                      guide = guide_colorbar(reverse = TRUE)) +
+  coord_flip()
+```
+
+# Repeat, with the set of all features extracted from the structural MRI scans
+### Read in:
+1. The repeated test-set AUC-based VI cross validation with the structural volume predictors
+2. The corresponding dataset on which variable ranking was conducted
+```{r}
+classificationResults <- readRDS(
+  "../../output/featureExtraction/NEWEST_adjSTR_testSetAUC_VIM_results.rds")
+adjStr <- readRDS("../../data/processed/adjustedStructuralData_2020-04-08.rds")
+```
+
+## Extract OOB AUC scores
+There is only one per seed (forest) because this was generated using the predict() function on the fully built forest
+```{r}
+OOB_AUCs <- sapply(classificationResults, function(seed) seed$oob.Score)
+```
+## Extract the test-set AUCs by aggregating each tree's test-set AUC
+This requires aggregating because the test-set AUC was computed seperatly at each tree,  to the same test set.
+```{r}
+crossValTest_AUCs_perSeed <- sapply(
+  X = classificationResults,
+  FUN = function(seed) {
+    bagged_testsetAUC = mean(sapply(seed$forest, function(tree) {
+      tree$auc # this is test-set AUC
+    }))
+  bagged_testsetAUC
+})
+```
+## Distribution of test-set and OOB AUCs:
+```{r, fig.asp=.38, fig.width=16}
+ggplot(rbind(data.frame("source" = "OOB", "AUC" = OOB_AUCs),
+             data.frame("source" = "CV", AUC = crossValTest_AUCs_perSeed))) + 
+  geom_density(aes(x = AUC, fill = source), alpha = .7) +
+  theme_linedraw()
+```
+
+## Variable Ranking
+    1. Within each forest, rank the variables by the absolute value of their importances
+    2. Average these ranks across all seeds
+```{r}
+### First extract the variable importances for each variable, within each seed/forest
+impFrame_wide <- reduce(
+  map(classificationResults, function(seed) {
+    imps = sapply(seed$testSetImportance, function(var) var$AUC_VIM)
+    data.frame("var" = names(seed$testSetImportance), "importance" = imps)
+    }),
+  left_join, by = "var"
+)
+names(impFrame_wide)[-1] <- paste0("importance_", grep("imp",names(impFrame_wide[-1])))
+### Compute the repeated cross-validation importance by averaging over all seeds
+impFrame_wide$avgTestSetImp <- rowMeans(
+  impFrame_wide[grep("imp", names(impFrame_wide))]
+)
+### Compute the absolute ranks,and average absolute importance
+impFrame_wide$avgAbsImportance <- rowMeans(
+  mutate_all(impFrame_wide[grep("imp", names(impFrame_wide))], abs)
+)
+impFrame_wide$avgAbsRank <- rowMeans(
+  mutate_all(impFrame_wide[grep("^imp", names(impFrame_wide))],
+             ~descending_rank(abs(.)))
+)
+
+## sort the data frame for plotting purposes
+impFrame_wide <- impFrame_wide %>%
+  arrange(desc(avgAbsImportance)) %>%
+  mutate_at("var", ~factor(., levels = rev(.)))
+```
+
+## View the variable importances
+```{r, fig.asp=.6, fig.width=16}
+ggplot(impFrame_wide) +
+  geom_col(aes(x = var, y = avgAbsImportance, fill = avgAbsRank)) +
+  scale_fill_gradient(low = "#00906f", high = "#ffbc00", 
+                      guide = guide_colorbar(reverse = TRUE)) +
+  coord_flip()
+```
+
+

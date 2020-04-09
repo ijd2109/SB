@@ -1,0 +1,167 @@
+---
+title: "structuralData_adjustmentForDemographics"
+author: "Ian Douglas"
+date: "4/7/2020"
+output: html_document
+---
+### Load in the packages required
+```{r}
+library(tidyverse)
+```
+
+### Read in the structural volume MRI
+```{r}
+raw_str_csv <- read.csv("../../data/raw/structural/v6_asegstats_all_compiled_Marta_02-01-2018.csv")
+
+#### Reformatting
+rawStructural <- raw_str_csv %>%
+  # Before using regular expression functions, manage the case sensitivity
+  mutate_at(vars(SUBJECTID_long), ~sub("sb", "SB", tolower(.))) %>%
+  # Firstly,delete any structural data that was collected at wave three as a different scanner was used
+  filter(!grepl("fu2", SUBJECTID_long)) %>%
+  # create variables that exist in the master which indcating which wave of data to pull
+  mutate(IDENT_SUBID = sub("_fu[0-9]", "", SUBJECTID_long),
+         index_wave = ifelse(grepl("_fu", SUBJECTID_long), as.numeric(substr(SUBJECTID_long, 9, 9)) + 1, 1),
+         uniq_key = paste0(IDENT_SUBID, "_", index_wave)) %>%
+  ungroup() %>%
+  select(IDENT_SUBID, uniq_key, everything()) %>%
+  # also deselect several variables that were used to compute other volumes; redundant ID and index wave columns
+  select(-Left.WM.hypointensities:-Right.non.WM.hypointensities, -X5th.Ventricle, -SUBJECTID_long, -index_wave)
+```
+### Read in the labels indicating which wave of data to pull
+```{r}
+labels <- readRDS("../../data/labels/wave1Labels.rds")
+```
+
+### Read in the master data frame with the gender variable
+```{r}
+load( # loads a data frame called "monster_SB"
+  "../../data/raw/3_ALL_long_cort_symptoms_brain_structure_function_epi_ages4-19_2019-05-15.Rdata"
+)
+```
+
+# Merging
+```{r}
+df1 <- monster_SB %>%
+  select(IDENT_SUBID, index_wave, age, gender, GROUP) %>%
+  mutate(uniq_key = paste0(IDENT_SUBID, "_", index_wave)) %>%
+  select(-IDENT_SUBID, -index_wave) %>%
+  merge(x = labels %>% select(IDENT_SUBID, uniq_key = uniq_key_str), y = ., by = "uniq_key", all.x = T) %>%
+  merge(x = ., y = rawStructural, by = c("uniq_key", "IDENT_SUBID"), all.x = T)
+
+### Delete those individuals who do not have complete structural MRI data
+df2 <- df1 %>% 
+  drop_na(Left.Lateral.Ventricle:CortexVol) %>%
+  # recode the gender variable
+  mutate_at(vars(gender), ~as.factor(ifelse(gender == "Female", 1, 0))) %>%
+  rename(GENDER_FEMALE = gender)
+saveRDS(df2,"../../data/processed/withNA_StrLabelled.rds")
+```
+
+# Combining regions
+According to Michelle Van Tiegham's notes,  delete several variables that pertain to overlapping brain regions
+```{r}
+regions_key <- read.csv("../../data/structuralVarNames20191002_MVT.csv") %>%
+  rename_at(2, ~replace(., TRUE, "keep")) %>%
+  mutate_at("keep", ~ifelse(. == "X", FALSE, TRUE)) %>%
+  filter(keep)
+
+df3 <- df2 %>%
+  select(uniq_key:GROUP, all_of(regions_key$var),
+         # additionally, drop the whole brain volum measure since it is redundant
+         -EstimatedTotalIntraCranialVol)
+saveRDS(df3,"../../data/processed/withNA_StrLabelled_SegmentationSubset.rds")
+```
+
+<!-- # Clean up some loose ends -->
+<!-- Some subjects have wave 2 structural scans, but are mislabeled in the master, or just have index_wave==1 and one row of data. As a result, during merging the information that comes from the master (group, gender, age) did not merge. So fix these here: -->
+<!-- ```{r} -->
+<!-- ### Finally, delete those who have NA for gender and age, since that is required to adjust the data -->
+<!-- ### Additionally if they don't have the GROUP variable, they should be dropped as well. -->
+
+<!-- # This is true of SB150, SB308, and SB312 -->
+<!-- df3 <- df2 -->
+
+<!-- ``` -->
+
+# Adjusting by gender and age
+```{r}
+adjustedStr <- readRDS("../../data/processed/withNA_StrLabelled.rds") %>%
+  drop_na()
+adjustFun <- function(col_name)
+{
+  model.data <- setNames(adjustedStr[c(col_name, "age", "GENDER_FEMALE")],
+                         nm = c("y", "age", "GENDER_FEMALE")) # rename the covariate to "y"
+  # Test for a sig covariance with age and gender:
+  corSig = cor.test(model.data$y, model.data$age)$p.value <= .05
+  anovaSig = summary(lm(y ~ GENDER_FEMALE, data = model.data))$coefficients[2, "Pr(>|t|)"] <= .05
+  # If a relationship is found, extract the residuals from a regression
+  if (any(c(corSig, anovaSig))) {
+    # record if the variable covaries with age and/or gender
+    covariances <- get("covariances", envir = .GlobalEnv)
+    covariances[covariances$var==col_name, c("age_cov","gender_cov")] <- c(corSig, anovaSig)
+    assign("covariances", value = covariances, pos = .GlobalEnv)
+    # now get the residuals:
+    resids <- resid(lm(y ~ ., data = model.data[, c("y", c("age","GENDER_FEMALE")[c(corSig, anovaSig)])]))
+  } else resids <- adjustedStr[, col_name]
+  resids # output the residuals (or the original variable if no relationship was found)
+}
+## create the 
+covariances <- data.frame("var" = names(adjustedStr[-1:-5]), 
+                          matrix(FALSE, nrow = length(names(adjustedStr[-1:-5])), ncol= 2,
+                                 dimnames = list(NULL, c("age_cov","gender_cov"))))
+# Run the function on each column
+adjustedStr[-1:-5] <- lapply(names(adjustedStr[-1:-5]), adjustFun)
+saveRDS(adjustedStr, "../../data/processed/adjustedStructuralData_2020-04-08.rds")
+# process results 
+covariances <- covariances %>% mutate(covariate = case_when(
+  age_cov == FALSE & gender_cov == FALSE ~ "None",
+  age_cov == TRUE & gender_cov == FALSE ~ "Age",
+  age_cov == FALSE & gender_cov == TRUE ~ "Gender",
+  age_cov == TRUE & gender_cov == TRUE ~ "Both"
+))
+write.csv(covariances, "../../data/ageGenderCovariationTable_structuralPredictors.csv", row.names = FALSE)
+```
+
+# Repeat the adjustment process with subsetted data
+```{r}
+# read in data and rmove na
+adjustedStrSubset <- readRDS(
+  "../../data/processed/withNA_StrLabelled_SegmentationSubset.rds") %>%
+  drop_na()
+# define adjustment function
+adjustFun <- function(col_name)
+{
+  model.data <- setNames(adjustedStrSubset[c(col_name, "age", "GENDER_FEMALE")],
+                         nm = c("y", "age", "GENDER_FEMALE")) # rename the covariate to "y"
+  # Test for a sig covariance with age and gender:
+  corSig = cor.test(model.data$y, model.data$age)$p.value <= .05
+  anovaSig = summary(lm(y ~ GENDER_FEMALE, data = model.data))$coefficients[2, "Pr(>|t|)"] <= .05
+  # If a relationship is found, extract the residuals from a regression
+  if (any(c(corSig, anovaSig))) {
+    # record if the variable covaries with age and/or gender
+    covariances <- get("covariances", envir = .GlobalEnv)
+    covariances[covariances$var==col_name, c("age_cov","gender_cov")] <- c(corSig, anovaSig)
+    assign("covariances", value = covariances, pos = .GlobalEnv)
+    # now get the residuals:
+    resids <- resid(lm(y ~ ., data = model.data[, c("y", c("age","GENDER_FEMALE")[c(corSig, anovaSig)])]))
+  } else resids <- adjustedStrSubset[, col_name]
+  resids # output the residuals (or the original variable if no relationship was found)
+}
+## create the 
+covariances <- data.frame("var" = names(adjustedStrSubset[-1:-5]), 
+                          matrix(FALSE, nrow = length(names(adjustedStrSubset[-1:-5])), ncol= 2,
+                                 dimnames = list(NULL, c("age_cov","gender_cov"))))
+# Run the function on each column
+adjustedStrSubset[-1:-5] <- lapply(names(adjustedStrSubset[-1:-5]), adjustFun)
+saveRDS(adjustedStrSubset, "../../data/processed/adjustedStructural_segmentationSubset_2020-04-08.rds")
+# process results 
+covariances <- covariances %>% mutate(covariate = case_when(
+  age_cov == FALSE & gender_cov == FALSE ~ "None",
+  age_cov == TRUE & gender_cov == FALSE ~ "Age",
+  age_cov == FALSE & gender_cov == TRUE ~ "Gender",
+  age_cov == TRUE & gender_cov == TRUE ~ "Both"
+))
+write.csv(covariances, "../../data/ageGenderCovariationTable_segmentationSubsetStructuralPredictors.csv", row.names = FALSE)
+```
+

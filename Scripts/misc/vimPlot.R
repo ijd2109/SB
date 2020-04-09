@@ -40,7 +40,7 @@ vimPlot <- function(model, num.vars = 30, fillcolor = 'lightgreen', return.imps 
     rowwise() %>%
     mutate_at(nm, ~ifelse(!is.null(model$importanceSD), . * impSD, .)) %>%
     ungroup() %>%
-    arrange_at(nm, ~desc(.)) %>% # importance is (necessarily) the first column
+    arrange_at(nm, ~plyr::desc(.)) %>% # importance is (necessarily) the first column
     # select the desired number of variables
     slice(1:ifelse(num.vars=="all", nrow(.), num.vars))
   
@@ -60,7 +60,7 @@ vimPlot <- function(model, num.vars = 30, fillcolor = 'lightgreen', return.imps 
   # Print the plot, adding titles depending on the type of importance (and errorbars if SD exists)
   if (exists("impSD", impFrame)) {
     print(plt +
-            ggtitle("Variable Importances within 95% Bootsrap confidence intervals") +
+            ggtitle("Variable Importances within 95% Bootstrap confidence intervals") +
             geom_errorbar(aes(x = variable, y = importance,
                               ymin = importance - 2*impSD, ymax = importance + 2*impSD)))
   } else print(plt + ggtitle("Variable Importances"))

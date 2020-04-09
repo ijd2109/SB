@@ -10,10 +10,10 @@
 
 testSetAUC_VIM <- function(
   forest.ranger, test.data = NULL, xtest=NULL, ytest=NULL, target.class, 
-  random.seed = NULL, nCores=NULL
+  nPerms = 1, random.seed = NULL, nCores=NULL
 ) {
   # require packages
-  require(dplyr); require(purrr); require(MLmetrics)
+  require(dplyr); require(purrr); require(MLmetrics); require(ranger); require(parallel)
   # check that the random forest model and function args have required attributes
   if (class(forest.ranger) != "ranger") {
     stop("Function is currently only implemented for ranger objects")
@@ -52,8 +52,9 @@ testSetAUC_VIM <- function(
     target_proba = x[, target.i] # extract the predicted probability of being in the target class
     .auc <- MLmetrics::AUC(y_pred = target_proba,
                            y_true = ifelse(test_df[,factor.i] == target.class, 1, 0))
-    list('proba' = x, "auc" = .auc, "truetest" = test_df[factor.i])
+    list('proba' = x, "auc" = .auc)
   })
+  names(treewise_result) <- paste0("tree_", 1:length(treewise_result))
   # For convenience, vectorize the AUC values for each tree for comparison with permuted AUCs later
   treewise_auc = sapply(treewise_result, function(L) L$auc)
   
@@ -71,8 +72,10 @@ testSetAUC_VIM <- function(
   Importances = mclapply(mc.silent = F, mc.cores = ifelse(is.null(nCores), 1, nCores),
     X = names(test_df)[-factor.i], # operate on all the variables minus the outcome factor
     FUN = function(nm) {
-      # permute the column, calling it by name
-      new_data = test_df %>% mutate_at(nm, sample)
+      # permute the column whose name is stored in "nm", nPerms times (and aggregate the random results)
+      newX <- vector(mode = "list", length = nPerms)
+      for (i in 1:nPerms) {newX[[i]] <- sample(test_df[, nm])}
+      new_data = test_df %>% mutate_at(nm, ~rowMeans(purrr::reduce(newX, data.frame))) 
       # create a list with the new predicted probabilities
       permForest_preds = array_branch(
         predict(forest.ranger, data=new_data, predict.all = T, seed = .seed)$predictions, margin = 3 
@@ -100,26 +103,33 @@ testSetAUC_VIM <- function(
   ) # end mclapply()
   
   # Importances is now a list, containing one item for each variable; so label it as such:
-  names(Importances) <- names(test_data)[-factor.i]
+  names(Importances) <- names(test_df)[-factor.i]
   # Each element of the list has the importance for the variable (for the whole forest);
   # and also the raw importances to each tree in the forest that were used to compute the VIM
   
-  return(Importances)
+  out = list("forest" = treewise_result, 
+             "testSetImportance" = Importances)
+  return(out)
 }
 
 # # Example. NOT RUN
-# newIris <- iris %>% 
+# newIris <- iris %>%
 #   # recode to predict if "Species" is setosa, or not
-#   mutate_at("Species", ~factor(ifelse(.=="setosa", "setosa", "not_setosa"), 
+#   mutate_at("Species", ~factor(ifelse(.=="setosa", "setosa", "not_setosa"),
 #                                levels = c("setosa","not_setosa")))
 # train.i <- sample(1:nrow(newIris), size = round(nrow(newIris)*.5))
 # train_iris <- newIris[train.i, ]
 # test_iris <- newIris[-train.i, ]
 # # Fit ranger model
 # train_irisRanger = ranger(Species ~., data = train_iris, probability = T, importance="permutation")
-# vi = testSetAUC_VIM(train_irisRanger, test.data = test_iris, target.class = "setosa")
+# vi = testSetAUC_VIM(train_irisRanger, test.data = test_iris, target.class = "setosa", random.seed = 1)
 # data.frame(
-#   "testSetAUC_VI" = sapply(vi, function(x) x$AUC_VIM),
-#   "OOBAccuracy_VI" = importance(train_irisRanger),
+#   "testSetAUC_VI" = sapply(vi$testSetImportance, function(x) x$AUC_VIM),
+#   "OOBAccuracy_VI" = importance(train_irisRanger)
 # )
+#              testSetAUC_VI OOBAccuracy_VI
+# Sepal.Length    0.01163579    0.010103367
+# Sepal.Width     0.00433281    0.005097003
+# Petal.Length    0.26533830    0.196612073
+# Petal.Width     0.28656593    0.206918675
 # # END NOT RUN
