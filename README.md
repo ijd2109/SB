@@ -1,3 +1,9 @@
+# CBCL pipeline
+
+The CBCL internalizing, externalizing, and total subscales were predicted through random forest regression by the volume of subcortical brian regions.
+## Findings
+![](./FINALMODEL-varimp-CBCLonSTR.jpg)
+
 # RCADS predictive modeling
 ## Highlights
 ### Random Forest distributions
