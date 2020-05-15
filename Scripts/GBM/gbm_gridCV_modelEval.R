@@ -1,4 +1,4 @@
-# set seed for reproudicibility.
+# set seed for reprodicibility.
 set.seed(111)
 t1 = Sys.time()
 # Load (or install) required packages
