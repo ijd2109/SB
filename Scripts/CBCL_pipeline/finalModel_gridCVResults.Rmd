@@ -313,13 +313,15 @@ ggplot(age_plt_data, aes(x = importance, y = variable)) +
   facet_grid(group~response, scales = 'free') +
   theme_linedraw() +
   theme(text = element_text(size = 15),
-        plot.title.position = "plot",
+        plot.title.position = "panel",
         plot.title = element_text(hjust = .5, size = 18),
         strip.text = element_text(size = 16.5)) +
   labs(title = "Age-group averaged Local Variable Importances from Random Forest Regressions\n of CBCL Externalizing, Internalizing, and Total Subscales") +
   ylab("Subcortical brain region") +
   xlab("% Change in Mean Squared Error")
 ggsave(filename = "~/DANL/SB/ianMasters/results/RF/plots/noCC_ageStrat-FINALMODEL-varimp-CBCLonSTR.jpg",
+        units = "in", width = 14, height = .7*14)
+ggsave(filename = "~/DANL/SB/ianMasters/noCC_ageStrat-FINALMODEL-varimp-CBCLonSTR.jpg",
         units = "in", width = 14, height = .7*14)
 ```
 
