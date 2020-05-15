@@ -1,0 +1,720 @@
+---
+title: "Model-Based Recursive Partitioning"
+author: "Ian Douglas"
+date: "4/15/2020"
+output: html_document
+---
+# read in the long format cbcl data
+```{r}
+# cbcl <- readRDS("../../../../data/master/final_cbcl_LongFormat.rds") %>%
+#   # for later merging, recode the group columnn
+#   mutate_at("GROUP", ~case_when(
+#     . == 0 ~ "COMP", . == 1 ~ "PI", . == 2 | . == 3 ~ NA_character_
+#   ))
+```
+### required packages
+```{r, message=FALSE, results='hide', warning=FALSE}
+library(tidyverse)
+library(haven)
+library(MLmetrics)
+library(parallel)
+library(partykit)
+library(randomForest)
+```
+# load in the SB master data frame with the CBCL collected (if and) when the participants were older
+```{r}
+sb.master <- haven::read_sav("../../data/master/J.Data_Entry_Master_8_17_17_fixed_fixed_4.sav")
+```
+# read in the subcortical brain predictors (adjusted and unadjusted)
+```{r}
+labelledBrainData <- readRDS("../../data/master/masterStrDataLong.rds") # unadjusted
+adjustedData <- readRDS("../../data/master/masterAdjustedStrDataLong_2020-04-28.rds") # adjusted
+```
+# select the desired cbcl data from the master data frame.
+```{r}
+cbcl <- sb.master %>% # from the data frame in which the cbcl survey is the older kids
+  select(IDENT_SUBID, contains("SUBAGE_s", ignore.case = F), contains("CBCL_")) %>%
+  select(IDENT_SUBID, contains("SUBAGE_s"), contains("INTERN"), contains("EXTERN"), contains("TOTPROB")) %>%
+  select(IDENT_SUBID, contains("SUBAGE_s"), contains("PROB_T"), contains("PROB_TOT")) %>%
+  # reorder the columns
+  select(1:4, matches("_T$"), matches("TOT$"), contains("FU1"), contains("FU2"), everything()) %>%
+  # extend the ages down into long form & use them to create a WAVE column to match that in the brain data
+  gather(., key = 'WAVE', value = 'brain_age_yrs', SUBAGE_session2:SUBAGE_session4) %>%
+  # convert it to yrs
+  mutate_at('brain_age_yrs', ~ ./12) %>%
+  select(IDENT_SUBID, WAVE, brain_age_yrs, everything()) %>% # reorder the columns again
+  # now change the subage_session2 to WAVE2, and so forth for session3 and 4; so, (subage_session2 --> WAVE1)
+  mutate_at("WAVE", ~paste0("WAVE", as.numeric(sub("SUBAGE_session", "", .)) - 1)) %>%
+  arrange(IDENT_SUBID, WAVE)
+```
+# Collapse the entries for each timepoint from the cbcl_1.5 and cbcl_4 for each category
+```{r}
+INTRNLZNG_T = NULL; INTRNLZNG_TOT = NULL
+EXTRNLZNG_T = NULL; EXTRNLZNG_TOT = NULL
+TOTALPROB_T = NULL; TOTALPROB_TOT = NULL
+# define quick helper func
+get.dat <- function(pat1, pat2)
+{
+  na.omit(unlist(
+    cbclDat[i, grepl(pat1, names(cbclDat)) & grepl(pat2, names(cbclDat))]
+  ))
+}
+
+for (i in 1:nrow(cbcl)) {
+  if (cbcl$WAVE[i] == "WAVE1") {
+    cbclDat <- cbcl %>% select(ends_with("T")) # either "T" or "TOT" desired
+  } else if (cbcl$WAVE[i] == "WAVE2") {
+    cbclDat <- cbcl %>% select(ends_with("_FU1"))
+  } else cbclDat <- cbcl %>% select(ends_with("_FU2"))
+  
+  res <- get.dat("INTERNPROB", "_T$|_T_")
+  INTRNLZNG_T[i] <- ifelse(length(res) == 1, res, NA)
+  res <- get.dat("INTERNPROB", "_TOT$|_TOT_")
+  INTRNLZNG_TOT[i] <- ifelse(length(res) == 1, res, NA)
+  res <- get.dat("EXTERNPROB", "_T$|_T_")
+  EXTRNLZNG_T[i] <- ifelse(length(res) == 1, res, NA)
+  res <- get.dat("EXTERNPROB", "_TOT$|_TOT_")
+  EXTRNLZNG_TOT[i] <- ifelse(length(res) == 1, res, NA)
+  res <- get.dat("TOTPROB", "_T$|_T_")
+  TOTALPROB_T[i] <- ifelse(length(res) == 1, res, NA)
+  res <- get.dat("TOTPROB", "_TOT$|_TOT_")
+  TOTALPROB_TOT[i] <- ifelse(length(res) == 1, res, NA)
+}
+```
+# Compile from the above results the cbcl long format data
+```{r}
+cbcl_long = data.frame(
+  select(cbcl, IDENT_SUBID, WAVE, brain_age_yrs),
+  CBCL_INTERNALIZING_T = INTRNLZNG_T, CBCL_INTERNALIZING_TOT = INTRNLZNG_TOT,
+  CBCL_EXTERNALIZING_T = EXTRNLZNG_T, CBCL_EXTERNALIZING_TOT = EXTRNLZNG_TOT,
+  CBCL_TOTALPROB_T = TOTALPROB_T, CBCL_TOTALPROB_TOT = TOTALPROB_TOT,
+  stringsAsFactors = F
+)
+```
+
+# merge in the data frames together
+```{r, message=FALSE}
+cbclAdjBrain <- left_join(x = adjustedData, y = cbcl_long,
+                          by = c("IDENT_SUBID", "WAVE", "brain_age_yrs"),
+                          all.x = T, all.y = F) %>%
+  select(IDENT_SUBID:WAVE, subjWeight, everything()) %>% ungroup()  %>%
+  # as a final step, reorder the levels of the GROUP factor (PI first, then COMP)
+  mutate_at("GROUP", ~factor(., levels = c("PI", "COMP")))
+# same for the unadjusted brain data:
+cbclRawBrain <- left_join(x = labelledBrainData, y = cbcl_long,
+                          by = c("IDENT_SUBID", "WAVE", "brain_age_yrs"),
+                          all.x = T, all.y = F) %>%
+  group_by(IDENT_SUBID) %>%
+  mutate(subjWeight = 1 / n()) %>%
+  select(IDENT_SUBID:WAVE, subjWeight, everything()) %>% ungroup()  %>%
+  # as a final step, reorder the levels of the GROUP factor (PI first, then COMP)
+  mutate_at("GROUP", ~factor(., levels = c("PI", "COMP")))
+```
+
+# Fit the MOBs
+```{r}
+reg <- function(y, x, start = NULL, weights = NULL, offset = NULL, ...) 
+{ 
+  glm(y ~ 0 + x, family = gaussian, start = start, ...)
+}
+```
+```{r}
+f1 <- as.formula(paste0("CBCL_INTERNALIZING_T ~ GROUP | ", regressors))
+# consider using glmertree
+mob1 <- partykit::mob(formula = f1,  data = cbclAdjBrain, 
+                      weights = adjustedData$subjWeight, na.action = na.omit, fit = reg,
+                      control= mob_control(alpha = 1)) # skip the sig test to control splits
+mob1
+```
+```{r}
+plot(mob1)
+```
+```{r}
+AIC(partykit::mob(formula = f1,  data = cbclAdjBrain, 
+                      weights = adjustedData$subjWeight, na.action = na.omit, fit = reg,
+                      control= mob_control(alpha = 1, minsize = 1, prune = "AIC")))
+```
+
+```{r}
+mob2 <- partykit::mob(formula = f1,  data = cbclRawBrain, 
+                      weights = cbclRawBrain$subjWeight, na.action = na.omit, fit = reg,
+                      control= mob_control(alpha = 1))
+summary(mob2)
+plot(mob2)
+```
+```{r}
+f3 <- as.formula(paste0("CBCL_INTERNALIZING_T ~ GROUP+brain_age_yrs+GENDER_FEMALE | ", regressors))
+partykit::mob(f3,  data = cbclRawBrain, 
+              weights = cbclRawBrain$subjWeight, na.action = na.omit, fit = reg)
+```
+```{r}
+f4 <- as.formula(
+  paste0("CBCL_INTERNALIZING_T ~ GROUP+",covariates,"|",regressors)
+)
+mob(f4,  data = cbclRawBrain, 
+              weights = cbclRawBrain$subjWeight, na.action = na.omit, fit = reg)
+```
+```{r}
+f5 <- as.formula(
+  paste0("CBCL_INTERNALIZING_T ~ -1+",regressors,"| GROUP")
+)
+mob(f5,  data = cbclRawBrain, 
+    weights = cbclRawBrain$subjWeight, na.action = na.omit, fit = reg)
+```
+
+# Select the earlier data, and predict cbcl in RF
+```{r}
+rf_data.frames <- lapply(list(cbclAdjBrain, cbclRawBrain), function(df) {
+  df.list <- lapply(grep("CBCL",names(df),value = T), function(var.nm) {
+    df %>%
+      select(1:(grep("CBCL",names(.))[1]-1), all_of(var.nm)) %>%
+      drop_na(!!rlang::enquo(var.nm)) %>% # drop_na with respect to the cbcl column
+      # finallly, if duplicates still persist, select the earlier instance
+      filter(!duplicated(IDENT_SUBID))
+  })
+  names(df.list) <- grep("CBCL",names(df),value = T)
+  df.list
+})
+names(rf_data.frames) <- c("adjusted","raw")
+lapply(rf_data.frames, function(rfdf) {lapply(rfdf, dim)})
+```
+
+# for each outcome run the rf function
+```{r}
+# Define functions to do the whole process on all data frames in the above-created list.
+
+# function to uniformly preprocess all data frames identically:
+preProcRegular <- function(my_data)
+{
+  my_data %>% 
+    rename_at(vars(contains("CBCL")), ~replace(., TRUE, "y")) %>%
+    select(-GENDER_FEMALE, -brain_age_yrs, -WAVE, -subjWeight, -EstimatedTotalIntraCranialVol) %>%
+    column_to_rownames("IDENT_SUBID")
+}
+# function to uniformly fit the rf the same way every time:
+fit_RF <- function(.data, .preProc = NULL)
+{
+  if (is_null(.preProc)) {
+    the_data <- .data
+  } else the_data <- .preProc(.data)
+  randomForest(
+    y ~ .-GROUP,
+    data = the_data,
+    strata = the_data$GROUP,
+    sampsize = sum(the_data$GROUP=="PI") * n_distinct(the_data$GROUP),
+    mtry = sqrt(ncol(the_data) - 8),
+    ntree = 901, importance = T
+  )
+}
+# function to wrap around the above to fit RF, and then compute LOOCV on it:
+fit_and_score <- function(data, fit_func, cv = "loocv", preProc = NULL)
+{
+  if (cv != "loocv") stop("loocv only for now")
+  # The model:
+  baseline <- fit_func(data, .preProc = preProc) # (preProc runs inside this func)
+  # Repeat for each row heldout:
+  LOOCV_scores <- sapply(1:nrow(data), function(i, preproc = preProc) {
+    train <- data[-i, ]
+    if (is_null(preproc)) {
+      test <- data[i, ]
+    } else test <- preProc(data[i, ]) # use preProc on this one out here for test.
+    fit <- fit_func(train) # preProc happens inside here for train.
+    MLmetrics::RMSE(
+      y_pred = predict(fit, newdata = test),
+      y_true = test[, ncol(test)] # recall that CBCL is in the last column
+    )
+  })
+  # return a named list
+  nms <- c(paste0("RF.",names(select(data, last_col()))),"LOOCV_scores","LOOCV_mean")
+  out <- list(baseline, LOOCV_scores, mean(LOOCV_scores))
+  names(out) <- nms
+  out
+}
+
+# fit this setup on all data frames in the nested list
+rf_models_earlierWave <- lapply(rf_data.frames, function(rfdfs) {
+  mclapply(X = rfdfs, FUN = function(df) {
+    fit_and_score(data = df, fit_func = fit_RF, cv = "loocv", preProc = preProcRegular)
+  }, mc.cores = 3)
+})
+```
+```{r}
+# save results
+saveRDS(rf_models_earlierWave, "../CBCL_pipeline/output/earlierWaveCBCL-RF_allModels_2020-05-04.rds")
+```
+
+# Print results
+```{r}
+lapply(rf_models_earlierWave, function(list) {
+  lapply(list, function(mod) mod[[1]])
+})
+```
+```{r}
+lapply(rf_models_earlierWave, function(list) {
+  lapply(list, function(mod) varImpPlot(mod[[1]],type=1))
+})
+```
+
+# Repeat the above, but regress GROUP out of the outcome variable
+```{r}
+# Define a new preProc function and repeat.
+
+# function to uniformly preprocess all data frames identically:
+preProcGrpAdjust <- function(my_data)
+{
+  out.dat <- my_data %>% 
+    rename_at(vars(contains("CBCL")), ~replace(., TRUE, "y")) %>%
+    select(-GENDER_FEMALE, -brain_age_yrs, -WAVE, -subjWeight, -EstimatedTotalIntraCranialVol) %>%
+    column_to_rownames("IDENT_SUBID")
+  out.dat$y <- resid(lm(y ~ GROUP, data = out.dat))
+  out.dat
+}
+
+# fit this setup on all data frames in the nested list
+rf_models_earlierWaveGrpCTRL <- lapply(rf_data.frames, function(rfdfs) {
+  mclapply(X = rfdfs, FUN = function(df) {
+    newdf <- preProcGrpAdjust(df) # do the preproc out here
+    fit_and_score(data = newdf, fit_func = fit_RF, cv = "loocv", preProc = NULL)
+  }, mc.cores = 3)
+})
+```
+# Print results
+```{r}
+lapply(rf_models_earlierWaveGrpCTRL, function(L) {lapply(L, function(mod) mod[[1]])})
+```
+
+# Regress group out of the predictors
+```{r}
+# Define a new preProc function to control for GROUP in the predictors. Re-fit
+# Function to uniformly preprocess all data frames identically:
+preProcGrpCOVadjust <- function(my_data)
+{
+  out.dat <- my_data %>% 
+    rename_at(vars(contains("CBCL")), ~replace(., TRUE, "y")) %>%
+    select(-GENDER_FEMALE, -brain_age_yrs, -WAVE, -subjWeight, -EstimatedTotalIntraCranialVol) %>%
+    column_to_rownames("IDENT_SUBID") %>%
+    # now adjust each brain-data column
+    mutate_at(vars(-GROUP, -y),
+              function(col) {resid(lm(covar ~ GROUP, data = data.frame(covar = col, GROUP=.$GROUP)))})
+  out.dat
+}
+
+# fit this setup on all data frames in the nested list
+rf_models_earlyWaveGrpCOVadj <- lapply(rf_data.frames, function(rfdfs) {
+  mclapply(X = rfdfs, FUN = function(df) {
+    newdf <- preProcGrpCOVadjust(df) # do the preproc out here
+    fit_and_score(data = newdf, fit_func = fit_RF, cv = "loocv", preProc = NULL)
+  }, mc.cores = 3)
+})
+```
+## Results
+```{r}
+lapply(rf_models_earlyWaveGrpCOVadj, function(L) {lapply(L, function(mod) mod[[1]])})
+```
+
+# Baseline models within each group
+(NONE WORKED)
+```{r}
+# lapply(rf_data.frames, function(L) {lapply(L, function(df) {
+#   models<-lapply(c("PI","COMP"), function(g) {
+#     fit_RF(df[df$GROUP == g, ], .preProc = preProcRegular)
+#   })
+#   names(models) <- c("PI", "COMP")
+#   models
+# })})
+```
+
+# Using all of the data
+
+Augment the data so that bootstrap resampling results in equal probability of selecting each subject, but is still completely random with respect to which wave is selected.
+```{r}
+# Note, just conducting this analysis on the adjusted data, and the T score outcomes
+augment.rf_data <- lapply(
+  X = list(CBCL_INTERNALIZING_T="CBCL_INTERNALIZING_T", 
+           CBCL_EXTERNALIZING_T="CBCL_EXTERNALIZING_T", 
+           CBCL_TOTALPROB_T="CBCL_TOTALPROB_T"),
+  FUN = function(nm) {
+    rf_data.frames$adjusted[[nm]] %>%
+      rbind(., filter(., subjWeight == 1)) %>%
+      select(-GENDER_FEMALE,-brain_age_yrs, -WAVE, -subjWeight, -EstimatedTotalIntraCranialVol) %>%
+      # rename the outcome y for uniformity:
+      select(IDENT_SUBID, GROUP, y = last_col(), everything())
+})
+
+# define a function to produce the trees
+rfRegressor <- function(seed, .data)
+{
+  set.seed(seed)
+  randomForest(
+    y ~.-GROUP-IDENT_SUBID, data = .data,
+    mtry = sqrt(ncol(.data) - 3), # minus GROUP, IDENT_SUBID and y
+    ntree = 1, # one tree
+    strata = .data$GROUP,
+    sampsize = n_distinct(.data$IDENT_SUBID[adjustedData$GROUP=="PI"])*n_distinct(.data$GROUP),
+    importance = TRUE,
+    keep.inbag = TRUE,
+    keep.forest = TRUE,
+    localImp = TRUE
+  )
+}
+# Fit a forest of these bootstrapped trees for each outcome
+augmented.forest.list <- lapply(augment.rf_data, function(df) {
+  mclapply(1:901, function(seed) {
+    rfRegressor(seed = seed, .data = df)
+  }, mc.cores = 3)
+})
+
+# Package up the forests with their original data
+aug.RF_pkg <- list(
+  CBCL_INTERNALIZING_T=list("df" = augment.rf_data$CBCL_INTERNALIZING_T,
+                            "forest"= augmented.forest.list$CBCL_INTERNALIZING_T), 
+  CBCL_EXTERNALIZING_T=list("df" = augment.rf_data$CBCL_EXTERNALIZING_T,
+                            "forest"= augmented.forest.list$CBCL_EXTERNALIZING_T), 
+  CBCL_TOTALPROB_T=list("df"=augment.rf_data$CBCL_TOTALPROB_T,
+                        "forest" = augmented.forest.list$CBCL_TOTALPROB_T)
+)
+# now add to each result the IDENT_SUBID of all subjects in bag and oob
+# Note, this is done manually b/c inbag does not mean a subject is not ALSO out of bag
+for (i in 1:length(aug.RF_pkg)) {
+  for (j in 1:length(aug.RF_pkg[[i]]$forest)) {
+    # Figure out who is OOB
+    the_model <- aug.RF_pkg[[i]]$forest[[j]]
+    inbag.index <- row(the_model$inbag)[, 1][the_model$inbag[, 1] != 0]
+    aug.RF_pkg[[i]]$forest[[j]]$INBAG.ID <- aug.RF_pkg[[i]]$df$IDENT_SUBID[inbag.index]
+    aug.RF_pkg[[i]]$forest[[j]]$OOB.ID <- aug.RF_pkg[[i]]$df$IDENT_SUBID[ # filter for OOB
+      !aug.RF_pkg[[i]]$df$IDENT_SUBID %in% aug.RF_pkg[[i]]$forest[[j]]$INBAG.ID]
+    aug.RF_pkg[[i]]$forest[[j]]$the_tree <- getTree(the_model, k = 1, labelVar = TRUE) # also add the tree
+    # Now get the out of bag predictions to the people in "OOB.ID"
+    aug.RF_pkg[[i]]$forest[[j]]$OOB.PREDICTIONS <- predict(
+      the_model, 
+      newdata = aug.RF_pkg[[i]]$df[
+        aug.RF_pkg[[i]]$df$IDENT_SUBID %in% aug.RF_pkg[[i]]$forest[[j]]$OOB.ID, ]
+    )
+    # True y:
+    YTRUE <- aug.RF_pkg[[i]]$df$y[
+      aug.RF_pkg[[i]]$df$IDENT_SUBID %in% aug.RF_pkg[[i]]$forest[[j]]$OOB.ID]
+    # RMSE:
+    aug.RF_pkg[[i]]$forest[[j]]$OOB.RMSE <- RMSE(
+      y_pred = aug.RF_pkg[[i]]$forest[[j]]$OOB.PREDICTIONS,
+      y_true = aug.RF_pkg[[i]]$df$y[
+        aug.RF_pkg[[i]]$df$IDENT_SUBID %in% aug.RF_pkg[[i]]$forest[[j]]$OOB.ID]
+    )
+    # Pseudo rsq:
+    aug.RF_pkg[[i]]$forest[[j]]$OOB.RSQ <- 1 - ((aug.RF_pkg[[i]]$forest[[j]]$OOB.RMSE^2)/var(YTRUE))
+  }
+}
+
+
+# Forest score (aggregation)
+for (i in 1:length(aug.RF_pkg)) {
+  aug.RF_pkg[[i]]$aggregate_RMSE <- mean(sapply(aug.RF_pkg[[i]]$forest, function(tree) tree$OOB.RMSE))
+  aug.RF_pkg[[i]]$aggregate_rsq <- mean(sapply(aug.RF_pkg[[i]]$forest, function(tree) tree$OOB.RSQ), na.rm = T)
+}
+```
+
+
+# Another version with older wave data
+```{r}
+# Select the earlier data, and predict cbcl in RF
+rf_Older_data.frames <- lapply(list(cbclAdjBrain, cbclRawBrain), function(df) {
+  df.list <- lapply(grep("CBCL",names(df),value = T), function(var.nm) {
+    df %>%
+      select(1:(grep("CBCL",names(.))[1]-1), all_of(var.nm)) %>%
+      drop_na(!!rlang::enquo(var.nm)) %>% # drop_na with respect to the cbcl column
+      # finally, select the latest instance of each participant
+      group_by(IDENT_SUBID) %>%
+      mutate(subjCount = 1:n()) %>%
+      filter(subjCount == max(subjCount)) %>%
+      select(-subjCount) %>%
+      ungroup()
+  })
+  names(df.list) <- grep("CBCL",names(df),value = T)
+  df.list
+})
+names(rf_Older_data.frames) <- c("adjusted","raw")
+lapply(rf_Older_data.frames, function(rfdf) {lapply(rfdf, dim)})
+```
+## Fit models as above
+```{r}
+rf_models_olderWave <- lapply(rf_Older_data.frames, function(rfdfs) {
+  mclapply(X = rfdfs, FUN = function(df) {
+    newdf <- preProcRegular(df)
+    fit_and_score(data = newdf, fit_func = fit_RF, cv = "loocv", preProc = NULL)
+  }, mc.cores = 3)
+})
+```
+### Results
+```{r}
+lapply(rf_models_olderWave, function(L) {lapply(L, function(mod) mod[[1]])})
+```
+# Save this data for further tunin
+```{r}
+final.df.list <- list()
+final.df.list$CBCL_INTERNALIZING_T <- rf_Older_data.frames$adjusted$CBCL_INTERNALIZING_T
+final.df.list$CBCL_EXTERNALIZING_T <- rf_Older_data.frames$adjusted$CBCL_EXTERNALIZING_T
+final.df.list$CBCL_TOTALPROB_T <- rf_Older_data.frames$adjusted$CBCL_TOTALPROB_T
+saveRDS(final.df.list,
+        "~/DANL/SB/ianMasters/data/processed/finalStrAdjDF-LIST_2020-05-07.rds")
+fit_RF
+```
+
+
+ARCHIVED OLD VERSION
+<!---
+# Read in the brain data; select the above variables
+```{r}
+load( # loads a data frame called "monster_SB"
+  "../../../../data/raw/3_ALL_long_cort_symptoms_brain_structure_function_epi_ages4-19_2019-05-15.Rdata"
+)
+
+brainData <- monster_SB %>% 
+  select(all_of(c("IDENT_SUBID","index_wave", "GROUP", unlist(subCortVarNames$var)))) %>%
+  # right off the bat, delete any wave 3 data
+  filter(as.numeric(as.character(index_wave)) < 3) %>%
+  # additionally, if any row is missing all brain data, remove the row
+  filter(rowSums(select(., -IDENT_SUBID:-GROUP), na.rm = TRUE) != 0) %>%
+  # simplify in dex_wave to a numeric variable
+  mutate_at("index_wave", ~as.numeric(as.character(.))) 
+```
+
+# delete any rows for which the outcome does not exist
+```{r}
+cbclInt <- cbcl %>% select(IDENT_SUBID:GROUP, CBCL_INTERNPROB_T) %>% drop_na(CBCL_INTERNPROB_T)
+cbclExt <- cbcl %>% select(IDENT_SUBID:GROUP, CBCL_EXTERNPROB_T) %>% drop_na(CBCL_EXTERNPROB_T)
+cbclTot <- cbcl %>% select(IDENT_SUBID:GROUP, CBCL_TOTPROB_T) %>% drop_na(CBCL_TOTPROB_T)
+# also, filter for waves 1 and 2 only.
+data.list <- lapply(list(cbclInt, cbclExt, cbclTot), function(x) {
+  x %>% filter(as.numeric(as.character(index_wave)) < 3) %>%
+    # also, simplift index_wave to a numeric var:
+    mutate_at("index_wave", ~as.numeric(as.character(.)))
+})
+# nnow the data are in a list; attach names correspondingly
+names(data.list) <- c("internalizing", "externalizing", "total")
+```
+
+# merge the predictor and response data frames
+```{r}
+# Run an anonymous function to optimally join the data by:
+# 1. If the subject has cbcl AND brain data at timepoint 1, use that
+# 2. Else, use timepoint 2 data
+# (3) If  no match exists, drop the subject
+data.list <- lapply(data.list, function(x) {
+  # create the union of all the wave 1 data
+  wave1 <- merge(x %>% filter(index_wave == 1), 
+                 brainData %>% filter(index_wave == 1),
+                 by = c("IDENT_SUBID", "index_wave", "GROUP"), all = T)
+  # create the union of all the wave 2 data
+  wave2 <- merge(x %>% filter(index_wave == 2),
+                 brainData %>% filter(index_wave == 2),
+                 by = c("IDENT_SUBID", "index_wave", "GROUP"), all = T)
+  # append the two
+  rbind(wave1, wave2) %>%
+    # arrange by subject and index_wave, putting timepoint 1 above timpeoint 2
+    arrange(IDENT_SUBID, index_wave) %>%
+    # delete the second of any duplicated subjects, if any
+    filter(!duplicated(IDENT_SUBID)) # (returned)
+})
+```
+
+# Adjusting for ICV, sex and age.
+#### Here, we also start to pair down the rows, to delete subjects without complete brain data.
+
+First, from the master data frame, read in age and sex, and adjust the structural variables accordingly
+```{r}
+# make sure the age and gender is correct (wasn't dropped during merging if we have it in the master)
+master <- read.csv("../../../../data/master/J.Data_Entry_Master_8_17_17_fixed_fixed_3.csv",
+                   stringsAsFactors = F)
+
+data.list2 <- lapply(data.list, function(df) {
+  dat <- df # make a copy
+  for (i in 1:nrow(dat)) {
+    who <- dat$IDENT_SUBID[i]; when <- dat$index_wave[i]
+    ageNames <- c("SUBAGE_Session1", "SUBAGE_session2", "SUBAGE_session3")[when]
+    # convert the age to years
+    dat[i, "age"] <- unlist(master[master$IDENT_SUBID == who, ageNames]) / 12
+    dat[i, "gender"] <- ifelse(master$DEM_3_GENDER_CHILD[master$IDENT_SUBID == who] == 1,
+                               "Female", "Male")
+  }
+  dat
+})
+```
+Adjust all structural variables by ICV
+```{r}
+data.icvAdj <- list()
+data.icvAdj$noCovAdj <- lapply(data.list2, function(x) {
+  # select columns with complete brain data (excluding estimated total cranial vol for now)
+  X <- x %>% filter(rowSums(select(., Left.Thalamus.Proper:CC_Anterior), na.rm = T) != 0)
+  mutate_at(X, vars(Left.Thalamus.Proper:CC_Anterior), 
+            function(col) {resid(lm(col ~ EstimatedTotalIntraCranialVol, data = X))}) %>%
+    # finally, once adjusting for ICV, it can be dropped.
+    select(-EstimatedTotalIntraCranialVol)
+    
+})
+# make a comparable list of data frames without adjusted (by ICV) volumes, filtered by complete brain data
+data.rawBrain <- list()
+data.rawBrain$noCovAdj <- lapply(data.list2, function(x) {
+  x %>% filter(rowSums(select(., Left.Thalamus.Proper:CC_Anterior), na.rm = T) != 0)
+})
+# "data.rawBrain" will contain data frames that can be used with ICV as a predictor, or not
+```
+Define a function to automate adjusting for any covariate, if it/they significantly covary with a predictor
+```{r}
+adjustFun <- function(col_name, ..., data)
+{
+  model.data <- setNames(data[c(col_name, ...)],
+                         nm = c("y", ...)) # rename the predictor to "y"
+  classes <- sapply(c(...), function(nm) class(model.data[, nm])) # record the covariate type
+  # Test for a sig covariance with covariate; based on its class use cor.test or ANOVA:
+  sigs <- NULL
+  for (i in 1:length(c(...))) {
+    if (classes[i] == "factor") {
+      f <- as.formula(paste0("y ~ ", c(...)[i]))
+      sigs[i] <- summary(lm(formula = f, data = model.data))$coefficients[2, "Pr(>|t|)"] <= .05
+    } else sigs[i] <- cor.test(model.data[, "y"], model.data[, c(...)[i]])$p.value <= .05
+  }
+  # If a relationship is found, extract the residuals from a regression
+  if (any(sigs)) {
+    sig_covs <- c(...)[sigs]
+    f <- as.formula(paste0("y ~ ", paste(sig_covs, collapse = " + ")))
+    # now get the residuals:
+    resids <- resid(lm(formula = f, data = model.data[, c("y", sig_covs)]))
+  } else resids <- data[, col_name] - mean(data[, col_name]) # just mean-center it instead.
+  resids # output the residuals (or the original variable if no relationship was found)
+}
+```
+# In this step, we lose any subjets whose age is not known too
+```{r}
+data.icvAdj$covAdj <- lapply(data.icvAdj$noCovAdj, function(dat) {
+  df <- dat %>% drop_na(age, gender)
+  cbind.data.frame(df %>% select(IDENT_SUBID:starts_with("CBCL")),
+                   setNames(as.data.frame(
+                     lapply(names(df %>% select(-IDENT_SUBID:-starts_with("CBCL"))), function(col) {
+                       adjustFun(col_name = col, "age", "gender", data = df)
+                      })
+                   ), nm = names(df %>% select(-IDENT_SUBID:-starts_with("CBCL")))))
+})
+```
+# Also adjust the structural covariate for age and gender that were not adjusted for ICV
+```{r}
+data.rawBrain$covAdjusted <- lapply(data.rawBrain$noCovAdj, function(dat) {
+  df <- dat %>% drop_na(age, gender)
+  cbind.data.frame(df %>% select(IDENT_SUBID:starts_with("CBCL")),
+                   setNames(as.data.frame(
+                     lapply(names(df %>% select(-IDENT_SUBID:-starts_with("CBCL"))), function(col) {
+                       adjustFun(col_name = col, "age", "gender", data = df)
+                      })
+                   ), nm = names(df %>% select(-IDENT_SUBID:-starts_with("CBCL")))))
+})
+```
+# As a final step, delete any rows for whom the response does not exist
+```{r}
+# data.icvAdj$covAdj <- lapply(data.icvAdj$covAdj, function(x){
+#   x %>% drop_na(starts_with("CBCL"))
+# })
+# data.icvAdj$noCovAdj <- lapply(data.icvAdj$noCovAdj, function(x){
+#   x %>% drop_na(starts_with("CBCL"))
+# })
+# data.rawBrain$noCovAdj <- lapply(data.rawBrain$noCovAdj, function(x){
+#   x %>% drop_na(starts_with("CBCL"))
+# })
+# data.rawBrain$covAdjusted <- lapply(data.rawBrain$covAdjusted, function(x){
+#   x %>% drop_na(starts_with("CBCL"))
+# })
+```
+
+# Fit models for the ICV-adjusted predictors (with and without adjustement for demographics)
+```{r}
+# prep the data by dropping NA from the response variable
+rfDF.icvAdj <- list()
+rfDF.icvAdj$noCovAdj <- lapply(data.icvAdj$noCovAdj, function(d) d %>% drop_na(starts_with("CBCL")))
+rfDF.icvAdj$covAdj <- lapply(data.icvAdj$covAdj, function(d) d %>% drop_na(starts_with("CBCL")))
+rfDF.rawBrain <- list()
+rfDF.rawBrain$noCovAdj <- lapply(data.rawBrain$noCovAdj, function(d) d %>% drop_na(starts_with("CBCL")))
+rfDF.rawBrain$covAdjusted <-lapply(data.rawBrain$covAdjusted, 
+                                   function(d) d %>% drop_na(starts_with("CBCL")))
+# define function to fit the model
+# create an option to include or drop the last column (which ICV where it exists)
+rf_func <- function(df, icv = FALSE)
+{
+  model.data <- df %>%
+    select(y = starts_with("CBCL"), Left.Thalamus.Proper:last_col(offset = as.numeric(icv)))
+  randomForest(y ~ ., data = model.data,
+               mtry = 6, ntree = 1000, importance = T, strata = df$GROUP)
+}
+# Fit the models
+icv.rf_models <- lapply(rfDF.icvAdj, function(list) {lapply(list, rf_func)})
+raw.withICV.rf_models <- lapply(rfDF.icvAdj, function(list) {lapply(list, rf_func)})
+raw.noICV.rf_models <- lapply(rfDF.icvAdj, function(list) {lapply(list, function(x) rf_func(x, icv=TRUE))})
+```
+# Results
+```{r}
+rf_model_list <- list(
+  "icvAdjusted" = icv.rf_models,
+  "notAdjustedByICV" = raw.withICV.rf_models,
+  "notICVAdjustedNotInclAsPredictor" = raw.noICV.rf_models
+)
+saveRDS(rf_model_list, "../../../CBCL_pipeline/output/rf_models_allVars.rds")
+lapply(rf_model_list, function(results) {lapply(results, function(list) {lapply(list, function(rf) rf)})})
+```
+
+# Re-fit the models on the best variables
+```{r}
+training.data <- raw_str_csv %>%
+  select(SUBJECTID_long, all_of(names(brainData[-1:-3]))) %>%
+  filter(!grepl("fu2$", SUBJECTID_long)) %>%
+  filter(rowSums(select(., -SUBJECTID_long), na.rm = T)  != 0) %>%
+  mutate(IDENT_SUBID = substr(SUBJECTID_long, 1, 5)) %>% select(-SUBJECTID_long) %>%
+  filter(!duplicated(IDENT_SUBID)) %>%
+  select(IDENT_SUBID, everything()) %>%
+  merge(., 
+        cbcl %>% 
+          select(., IDENT_SUBID, GROUP) %>%
+          filter(!duplicated(IDENT_SUBID)) %>%
+          filter(!is.na(GROUP)), 
+        by = "IDENT_SUBID") %>%
+  mutate_at("GROUP", ~factor(., levels = c("PI", "COMP")), all.y = F) %>%
+  select(-EstimatedTotalIntraCranialVol)
+# fit random forest
+rf.train <- randomForest(x = select(training.data, -GROUP, -IDENT_SUBID),
+                         y = training.data$GROUP,
+                         mtry = 6, ntree = 1000, importance = T, strata = training.data$GROUP,
+                         sampsize = rep(sum(training.data$GROUP=="PI"), times = 2))
+# permute var imps
+pimpRes <- vita::PimpTest(PIMP(X = select(training.data, -GROUP, -IDENT_SUBID), 
+                               y = training.data$GROUP,
+                               rForest = rf.train,
+                               S = 1000))
+saveRDS(pimpRes, "../../../CBCL_pipeline/output/pimpResults_structure.rds")
+data.frame(pimpRes$pvalue, "var"=rownames(pimpRes$pvalue), stringsAsFactors = FALSE) %>% 
+  arrange(p.value) %>% .[1:11,"var"]
+```
+
+refit the models with the top 11 of 21 variables
+```{r}
+bestVars <- data.frame(pimpRes$pvalue, "var"=rownames(pimpRes$pvalue), stringsAsFactors = FALSE) %>% 
+  arrange(p.value) %>% .[1:11,"var"]
+rf_funcBest <- function(df, icv = FALSE)
+{
+  model.data <- df %>% select(y = starts_with("CBCL"), all_of(bestVars))
+  randomForest(y ~ ., data = model.data,
+               mtry = 8, ntree = 1000, importance = T, strata = df$GROUP)
+} 
+bestVar.icv.rf_models <- lapply(rfDF.icvAdj, function(list) {lapply(list, rf_funcBest)})
+bestVar.raw.withICV.rf_models <- lapply(rfDF.icvAdj, function(list) {lapply(list, rf_funcBest)})
+```
+```{r}
+bestVars_rf_model_list <- list(
+  "icvAdjusted" = bestVar.icv.rf_models,
+  "notAdjustedByICV" = bestVar.raw.withICV.rf_models
+)
+saveRDS(bestVars_rf_model_list, "../../../CBCL_pipeline/output/bestVars_rf_model_list.rds")
+lapply(bestVars_rf_model_list, function(list) {lapply(list, function(rf) rf)})
+```
+
+# Variable importance plots
+```{r}
+source("../../../misc/vimPlot.R")
+rf_model_list <- readRDS("../../../CBCL_pipeline/output/rf_models_allVars.rds")
+lapply(rf_model_list, function(list) {lapply(list, function(list2) {lapply(list2, vimPlot)})})
+```
+--->

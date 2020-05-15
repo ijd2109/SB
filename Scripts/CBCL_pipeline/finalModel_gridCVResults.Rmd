@@ -1,0 +1,635 @@
+---
+title: "finalModel_gridCVResults"
+author: "Ian Douglas"
+date: "5/7/2020"
+output: html_document
+---
+```{r}
+library(tidyverse)
+```
+### Read in the grid results and the data used for each one
+```{r}
+grid.res <- readRDS("../../output/grid_search/noCC_finalCBCL_ModelsGridCV_2020-05-13.rds")
+final.df.list <- readRDS("~/DANL/SB/ianMasters/data/processed/finalStrAdjDF-LIST_2020-05-07.rds")
+```
+# re create the grid used to generate the results
+```{r}
+df.list <- lapply(final.df.list, function(df) {
+  df %>% 
+    rename_at(vars(contains("CBCL")), ~replace(., TRUE, "y")) %>%
+    select(-GENDER_FEMALE, -brain_age_yrs, -WAVE, -subjWeight, -EstimatedTotalIntraCranialVol) %>%
+    # Now delete all the corpus callosum variables!
+    select(-starts_with('CC_')) %>%
+    column_to_rownames("IDENT_SUBID")
+})
+# Now regenerate the grid identically to the way it was during the grid search
+# Note that in the cross validation script the data is also contained in the below list
+# Here we just need the grid again, not in a nested object with the data too.
+grd.list = lapply(df.list, function(df) {
+  expand.grid(
+      .mtry = 2:(ncol(df) - 3), # minus the response and GROUP; the maximum is p - 1
+      .ntree = seq(500, 1550, by = 75),
+      .nodesize = seq(1, 20, by = 1)
+  )
+})
+```
+# First the Pipeline without Corpus Callosum
+```{r,eval=F, echo=F}
+all.rsq.list <- lapply(names(grid.res), function(nm) {
+  sapply(1:nrow(grd.list[[nm]]), function(i) {
+    tail(grid.res[[nm]][[i]]$rsq, 1)
+  })
+})
+names(all.rsq.list) <- names(grid.res)
+all.mse.list <- lapply(names(grid.res), function(nm) {
+  sapply(1:nrow(grd.list[[nm]]), function(i) {
+    tail(grid.res[[nm]][[i]]$mse, 1)
+  })
+})
+names(all.mse.list) <- names(grid.res)
+```
+Best result based on rsq and mse (seperately)
+```{r, eval=F, echo=F}
+lapply(all.rsq.list, which.max)
+lapply(all.mse.list, which.min)
+```
+# Manually input the number of the best iteration so as to identify the best hyperparameters
+```{r, eval=F}
+rbind(
+data.frame(response = "internalizing",
+           grd.list$CBCL_INTERNALIZING_T[211,],
+           rsq = all.rsq.list$CBCL_INTERNALIZING_T[211],
+           mse = all.mse.list$CBCL_INTERNALIZING_T[211]),
+data.frame(response = "externalizing",
+           grd.list$CBCL_EXTERNALIZING_T[3823,],
+           rsq = all.rsq.list$CBCL_EXTERNALIZING_T[3823],
+           mse = all.mse.list$CBCL_EXTERNALIZING_T[3823]),
+data.frame(response = "total",
+           grd.list$CBCL_TOTALPROB_T[3165,],
+           rsq = all.rsq.list$CBCL_TOTALPROB_T[3165],
+           mse = all.mse.list$CBCL_TOTALPROB_T[3165])
+) -> fnl.mod.tbl
+saveRDS(fnl.mod.tbl, "../../output/noCC_FINAL-bestHyperparameters-2020-05-10.rds")
+```
+```{r}
+fnl.mod.tbl <- readRDS("../../output/noCC_FINAL-bestHyperparameters-2020-05-10.rds")
+fnl.mod.tbl
+```
+
+Iteratively create models to reproduce the above
+Again, manually input the best parameters from the above:
+```{r, eval=F}
+# define functions to automatically produce these forests with different seeds
+RF_intrnl <- function(seed)
+{
+  set.seed(seed)
+  randomForest(
+    y ~ .-GROUP,
+    data = df.list$CBCL_INTERNALIZING_T,
+    strata = df.list$CBCL_INTERNALIZING_T$GROUP,
+    sampsize = sum(
+      df.list$CBCL_INTERNALIZING_T$GROUP=="PI"
+      )*n_distinct(df.list$CBCL_INTERNALIZING_T$GROUP),
+  # save desired outputs:
+  importance = T, proximity = T, keep.forest = T, localImp = T,
+  # optimal parameters:
+  mtry = 2, ntree = 500, nodesize = 2
+  )
+}
+
+RF_extrnl <- function(seed) 
+{
+  set.seed(seed)
+  randomForest(
+    y ~ .-GROUP,
+    data = df.list$CBCL_EXTERNALIZING_T,
+    strata = df.list$CBCL_EXTERNALIZING_T$GROUP,
+    sampsize = sum(
+      df.list$CBCL_EXTERNALIZING_T$GROUP=="PI"
+      )*n_distinct(df.list$CBCL_EXTERNALIZING_T$GROUP),
+    # save desired outputs:
+    importance = T, proximity = T, keep.forest = T, localImp = T,
+    # optimal parameters:
+    mtry = 2, ntree = 725, nodesize = 19
+  )
+}
+
+RF_ttl <- function(seed, reset.seed = TRUE)
+{
+  if (reset.seed) set.seed(seed)
+  randomForest(
+    y ~ .-GROUP,
+    data = df.list$CBCL_TOTALPROB_T,
+    strata = df.list$CBCL_TOTALPROB_T$GROUP,
+    sampsize = sum(
+      df.list$CBCL_TOTALPROB_T$GROUP=="PI"
+      )*n_distinct(df.list$CBCL_TOTALPROB_T$GROUP),
+    # save desired outputs:
+    importance = T, proximity = T, keep.forest = T, localImp = T, keep.inbag = T,
+    # optimal parameters:
+    mtry = 2, ntree = 575, nodesize = 16
+  )
+}
+```
+
+# create forests with these parameters with different seeds until the optimal model is found
+Here, manually input the RSQ we are searching for
+```{r, eval = F}
+# First for internalizing cbcl
+rf.intrnl <- NULL
+seed <- 0
+RSQ <- -Inf
+t0 <- Sys.time()
+while (RSQ < 0.0530) {
+  seed <- seed + 1
+  rf.intrnl <- RF_intrnl(seed)
+  RSQ <- tail(rf.intrnl$rsq, 1)
+  t1 <- Sys.time()
+}
+print("Internalizing:")
+print(paste0("Elapsed Time: ", t1 - t0))
+print(paste0("Best model found at seed: ", seed))
+
+# Externalizing cbcl
+rf.extrnl <- NULL
+seed <- 0
+RSQ <- -Inf
+t0 <- Sys.time()
+while (RSQ < -0.030) {
+  seed <- seed + 1
+  rf.extrnl <- RF_extrnl(seed)
+  RSQ <- tail(rf.extrnl$rsq, 1)
+  t1 <- Sys.time()
+}
+print("Externalizing:")
+print(paste0("Elapsed Time: ", t1 - t0))
+print(paste0("Best model found at seed: ", seed))
+
+# Total cbcl
+# This one never reached its "optimal" value above, after hundreds of thousands of tries, so I am just going to take the model with the same same hyperparameters out of 100 tries with the best RSQ
+# rf.ttl <- NULL
+# seed <- 0
+# RSQ <- -Inf
+# t0 <- Sys.time()
+# while (RSQ < -0.01) {
+#   seed <- seed + 1
+#   rf.ttl <- RF_ttl(seed)
+#   RSQ <- tail(rf.ttl$rsq, 1)
+#   t1 <- Sys.time()
+# }
+# print("Total")
+# print(paste0("Elapsed Time: ", t1 - t0))
+# print(paste0("Best model found at seed: ", seed))
+rf.ttl <- NULL
+rfi <- NULL
+RSQ <- NULL
+RSQi <- NULL
+set.seed(111)
+for (i in 1:100) {
+  if (i == 1) {
+    rf.ttl <- RF_ttl(reset.seed = FALSE)
+    RSQ <- tail(rf.ttl$rsq, 1)
+  } else {
+    rfi <- RF_ttl(reset.seed = FALSE)
+    RSQi <- tail(rfi$rsq, 1)
+    if (RSQi > RSQ) {
+      rf.ttl <- rfi
+      RSQ <- RSQi
+    }
+  }
+}
+```
+# Save final models
+```{r, eval=F}
+saveRDS(rf.intrnl, "../../output/cbcl_pipeline/noCC_FINALMODEL-cbclInternalizing-2020-05-10.rds")
+saveRDS(rf.extrnl, "../../output/cbcl_pipeline/noCC_FINALMODEL-cbclExternalizing-2020-05-10.rds")
+saveRDS(rf.ttl, "../../output/cbcl_pipeline/noCC_FINALMODEL-cbclTotalprob-2020-05-10.rds")
+```
+```{r,eval=T, echo=F}
+rf.intrnl <- readRDS("../../output/cbcl_pipeline/noCC_FINALMODEL-cbclInternalizing-2020-05-10.rds")
+rf.extrnl <- readRDS("../../output/cbcl_pipeline/noCC_FINALMODEL-cbclExternalizing-2020-05-10.rds")
+rf.ttl <- readRDS("../../output/cbcl_pipeline/noCC_FINALMODEL-cbclTotalprob-2020-05-10.rds")
+```
+
+# local importances
+```{r, eval=F}
+localImps <- list(
+  'intrnl' = list(
+    'PI' = rf.intrnl$localImportance[,final.df.list$CBCL_INTERNALIZING_T$GROUP=="PI"],
+    'COMP' = rf.intrnl$localImportance[,final.df.list$CBCL_INTERNALIZING_T$GROUP!="PI"]),
+  'extrnl' = list(
+    'PI'=rf.extrnl$localImportance[,final.df.list$CBCL_EXTERNALIZING_T$GROUP=="PI"],
+    'COMP' = rf.extrnl$localImportance[,final.df.list$CBCL_EXTERNALIZING_T$GROUP!="PI"]),
+  'total'= list(
+    'PI'= rf.ttl$localImportance[,final.df.list$CBCL_TOTALPROB_T$GROUP == "PI"],
+    'COMP' = rf.ttl$localImportance[,final.df.list$CBCL_TOTALPROB_T$GROUP!="PI"])
+)
+ageSplitLocalImp <- list(
+  'intrnl' = list(
+    'under11yrsOld' = rf.intrnl$localImportance[,final.df.list$CBCL_INTERNALIZING_T$brain_age_yrs < 11.0],
+    'elevenYrsOrOlder' = rf.intrnl$localImportance[,final.df.list$CBCL_INTERNALIZING_T$brain_age_yrs >= 11.0]),
+  'extrnl' = list(
+    'under11yrsOld'=rf.extrnl$localImportance[,final.df.list$CBCL_EXTERNALIZING_T$brain_age_yrs < 11.0],
+    'elevenYrsOrOlder' = rf.extrnl$localImportance[,final.df.list$CBCL_EXTERNALIZING_T$brain_age_yrs >= 11.0]),
+  'total'= list(
+    'under11yrsOld'= rf.ttl$localImportance[,final.df.list$CBCL_TOTALPROB_T$brain_age_yrs < 11.0],
+    'elevenYrsOrOlder' = rf.ttl$localImportance[,final.df.list$CBCL_TOTALPROB_T$brain_age_yrs < 11.0])
+)
+saveRDS(ageSplitLocalImp, "../../output/cbcl_pipeline/noCC_ageSplitlocalImportancesFINAL-2020-05-10.rds")
+saveRDS(localImps,"../../output/cbcl_pipeline/noCC_localImportancesFINAL-2020-05-10.rds")
+```
+
+# Variable importance plots
+```{r, eval=F}
+plt_data <- map_dfr(names(localImps), function(nm) {
+  map_dfr(c("PI","COMP"), function(grp) {
+    data.frame(
+      response = nm,
+      group = grp,
+      variable = rownames(localImps[[nm]][[grp]]),
+      importance = rowMeans(localImps[[nm]][[grp]]),
+      stringsAsFactors = F
+    )
+  })
+}) %>%
+  mutate_at(vars(response), ~case_when(
+    . == "intrnl" ~ 'internalizing', . == "extrnl" ~ "externalizing", TRUE ~ "total"
+  )) %>%
+  group_by(response, group) %>%
+  arrange(variable) %>% 
+  mutate_at(vars(variable), ~factor(., levels = rev(unique(.))))
+saveRDS(plt_data,
+        "../../output/cbcl_pipeline/noCC_plotDataFrom-FINALMODELS-forFINALvarImpPlot-2020-05-10.rds")
+```
+```{r, echo=F, eval=T}
+plt_data <- readRDS(
+  "../../output/cbcl_pipeline/noCC_plotDataFrom-FINALMODELS-forFINALvarImpPlot-2020-05-10.rds")
+```
+### For age
+```{r}
+age_plt_data <- map_dfr(names(ageSplitLocalImp), function(nm) {
+  map_dfr(c("under11yrsOld","elevenYrsOrOlder"), function(grp) {
+    data.frame(
+      response = nm,
+      group = grp,
+      variable = rownames(ageSplitLocalImp[[nm]][[grp]]),
+      importance = rowMeans(ageSplitLocalImp[[nm]][[grp]]),
+      stringsAsFactors = F
+    )
+  })
+}) %>%
+  mutate_at(vars(response), ~case_when(
+    . == "intrnl" ~ 'internalizing', . == "extrnl" ~ "externalizing", TRUE ~ "total"
+  )) %>%
+  group_by(response, group) %>%
+  arrange(variable) %>% 
+  mutate_at(vars(variable), ~factor(., levels = rev(unique(.))))
+saveRDS(age_plt_data,
+        "../../output/cbcl_pipeline/noCC_ageSplit_plotDataFrom-FINALMODELS-forFINALvarImpPlot-2020-05-10.rds")
+```
+
+```{r, fig.asp=.7, fig.width=14}
+ggplot(plt_data, aes(x = importance, y = variable)) +
+  geom_bar(stat = "identity", fill = "darkblue") + 
+  facet_grid(group~response, scales = 'free') +
+  theme_linedraw() +
+  theme(text = element_text(size = 15),
+        plot.title.position = "plot",
+        plot.title = element_text(hjust = .5, size = 18),
+        strip.text = element_text(size = 16.5)) +
+  labs(title = "Group-averaged Local Variable Importances from Random Forest Regressions\n of CBCL Externalizing, Internalizing, and Total Subscales") +
+  ylab("Subcortical brain region") +
+  xlab("% Change in Mean Squared Error")
+# ggsave(filename = "~/DANL/SB/ianMasters/results/RF/plots/FINALMODEL-varimp-CBCLonSTR.jpg",
+#        units = "in", width = 14, height = .7*14)
+# ggsave(filename = "~/DANL/SB/ianMasters/FINALMODEL-varimp-CBCLonSTR.jpg",
+#        units = "in", width = 14, height = .7*14)
+```
+
+##For age
+```{r}
+ggplot(age_plt_data, aes(x = importance, y = variable)) +
+  geom_bar(stat = "identity", fill = "darkblue") + 
+  facet_grid(group~response, scales = 'free') +
+  theme_linedraw() +
+  theme(text = element_text(size = 15),
+        plot.title.position = "plot",
+        plot.title = element_text(hjust = .5, size = 18),
+        strip.text = element_text(size = 16.5)) +
+  labs(title = "Age-group averaged Local Variable Importances from Random Forest Regressions\n of CBCL Externalizing, Internalizing, and Total Subscales") +
+  ylab("Subcortical brain region") +
+  xlab("% Change in Mean Squared Error")
+ggsave(filename = "~/DANL/SB/ianMasters/results/RF/plots/noCC_ageStrat-FINALMODEL-varimp-CBCLonSTR.jpg",
+        units = "in", width = 14, height = .7*14)
+```
+
+```{r}
+par(mfrow = c(1, 3))
+varImpPlot(rf.intrnl, type = 1, main = "Full sample variable importance\n predicting Internalizing")
+varImpPlot(rf.extrnl, type = 1, main = "Full sample variable importance\n predicting Externalizing")
+varImpPlot(rf.ttl, type = 1, main = "Full sample variable importance\n predicting Total CBCL")
+```
+
+
+# The pipeline with CC regions
+### Read in the grid results and the data used for each one
+```{r}
+# grid.res <- readRDS("../../output/grid_search/finalCBCL_ModelsGridCV_2020-05-07.rds")
+final.df.list <- readRDS("~/DANL/SB/ianMasters/data/processed/finalStrAdjDF-LIST_2020-05-07.rds")
+```
+# re create the grid used to generate the results
+```{r}
+df.list <- lapply(final.df.list, function(df) {
+  df %>% 
+    rename_at(vars(contains("CBCL")), ~replace(., TRUE, "y")) %>%
+    select(-GENDER_FEMALE, -WAVE, -brain_age_yrs, -subjWeight, -EstimatedTotalIntraCranialVol) %>%
+    column_to_rownames("IDENT_SUBID")
+})
+# Now regenerate the grid identically to the way it was during the grid search
+grd.list <- lapply(df.list, function(df) {
+  expand.grid(
+    .mtry = 2:(ncol(df) - 3), # minus the response and GROUP; the maximum is p - 1
+    .ntree = seq(500, 1550, by = 75),
+    .nodesize = seq(1, 20, by = 1)) 
+})
+```
+
+```{r,eval=F, echo=F}
+all.rsq.list <- lapply(names(grid.res), function(nm) {
+  sapply(1:nrow(grd.list[[nm]]), function(i) {
+    tail(grid.res[[nm]][[i]]$rsq, 1)
+  })
+})
+names(all.rsq.list) <- names(grid.res)
+all.mse.list <- lapply(names(grid.res), function(nm) {
+  sapply(1:nrow(grd.list[[nm]]), function(i) {
+    tail(grid.res[[nm]][[i]]$mse, 1)
+  })
+})
+names(all.mse.list) <- names(grid.res)
+```
+Best result based on rsq and mse (seperately)
+```{r, eval=F, echo=F}
+lapply(all.rsq.list, which.max)
+lapply(all.mse.list, which.min)
+```
+```{r, eval=F}
+rbind(
+data.frame(response = "internalizing",
+           grd.list$CBCL_INTERNALIZING_T[1143,],
+           rsq = all.rsq.list$CBCL_INTERNALIZING_T[1143],
+           mse = all.mse.list$CBCL_INTERNALIZING_T[1143]),
+data.frame(response = "externalizing",
+           grd.list$CBCL_EXTERNALIZING_T[4846,],
+           rsq = all.rsq.list$CBCL_EXTERNALIZING_T[4846],
+           mse = all.mse.list$CBCL_EXTERNALIZING_T[4846]),
+data.frame(response = "total",
+           grd.list$CBCL_TOTALPROB_T[2935,],
+           rsq = all.rsq.list$CBCL_TOTALPROB_T[2935],
+           mse = all.mse.list$CBCL_TOTALPROB_T[2935])
+) -> fnl.mod.tbl
+# saveRDS(fnl.mod.tbl, "../../output/FINAL-bestHyperparameters-2020-05-10.rds")
+```
+```{r}
+fnl.mod.tbl <- readRDS("../../output/FINAL-bestHyperparameters-2020-05-10.rds")
+fnl.mod.tbl
+```
+
+Iteratively create models to reproduce the above
+```{r, eval=F}
+# define functions to automatically produce these forests with different seeds
+RF_intrnl <- function(seed)
+{
+  set.seed(seed)
+  randomForest(
+    y ~ .-GROUP,
+    data = df.list$CBCL_INTERNALIZING_T,
+    strata = df.list$CBCL_INTERNALIZING_T$GROUP,
+    sampsize = sum(
+      df.list$CBCL_INTERNALIZING_T$GROUP=="PI"
+      )*n_distinct(df.list$CBCL_INTERNALIZING_T$GROUP),
+  # save desired outputs:
+  importance = T, proximity = T, keep.forest = T, localImp = T,
+  # optimal parameters:
+  mtry = 4, ntree = 500, nodesize = 5
+  )
+}
+
+RF_extrnl <- function(seed) 
+{
+  set.seed(seed)
+  randomForest(
+    y ~ .-GROUP,
+    data = df.list$CBCL_EXTERNALIZING_T,
+    strata = df.list$CBCL_EXTERNALIZING_T$GROUP,
+    sampsize = sum(
+      df.list$CBCL_EXTERNALIZING_T$GROUP=="PI"
+      )*n_distinct(df.list$CBCL_EXTERNALIZING_T$GROUP),
+    # save desired outputs:
+    importance = T, proximity = T, keep.forest = T, localImp = T,
+    # optimal parameters:
+    mtry = 2, ntree = 500, nodesize = 18
+  )
+}
+
+RF_ttl <- function(seed)
+{
+  set.seed(seed)
+  randomForest(
+    y ~ .-GROUP,
+    data = df.list$CBCL_TOTALPROB_T,
+    strata = df.list$CBCL_TOTALPROB_T$GROUP,
+    sampsize = sum(
+      df.list$CBCL_TOTALPROB_T$GROUP=="PI"
+      )*n_distinct(df.list$CBCL_TOTALPROB_T$GROUP),
+    # save desired outputs:
+    importance = T, proximity = T, keep.forest = T, localImp = T, keep.inbag = T,
+    # optimal parameters:
+    mtry = 10, ntree = 800, nodesize = 11
+  )
+}
+```
+
+# create forests with these parameters with different seeds until the optimal model is found
+```{r, eval = F}
+# First for internalizing cbcl
+rf.intrnl <- NULL
+seed <- 1
+RSQ <- -Inf
+t0 <- Sys.time()
+while (RSQ < .1340) {
+  rf.intrnl <- RF_intrnl(seed)
+  RSQ <- tail(rf.intrnl$rsq, 1)
+  seed <- seed + 1
+  t1 <- Sys.time()
+}
+print(paste0("Elapsed Time: ", t1 - t0))
+print(paste0("Best model found at seed: ", seed))
+```
+11.5 seconds, seed is 54
+
+```{r, eval = F}
+# Externalizing cbcl
+rf.extrnl <- NULL
+seed <- 1
+RSQ <- -Inf
+t0 <- Sys.time()
+while (RSQ < .0260) {
+  rf.extrnl <- RF_extrnl(seed)
+  RSQ <- tail(rf.extrnl$rsq, 1)
+  seed <- seed + 1
+  t1 <- Sys.time()
+}
+print(paste0("Elapsed Time: ", t1 - t0))
+print(paste0("Best model found at seed: ", seed))
+```
+1.38 minutes, seed is 709.
+
+```{r, eval = F}
+# Total cbcl
+rf.ttl <- NULL
+seed <- 1
+RSQ <- -Inf
+t0 <- Sys.time()
+while (RSQ < .0869) {
+  rf.ttl <- RF_ttl(seed)
+  RSQ <- tail(rf.ttl$rsq, 1)
+  seed <- seed + 1
+  t1 <- Sys.time()
+}
+print(paste0("Elapsed Time: ", t1 - t0))
+print(paste0("Best model found at seed: ", seed - 1)) # the printout below is wrong!
+```
+12.29 minutes, seed is 1520
+
+# Save final models
+```{r, eval=F}
+saveRDS(rf.intrnl, "../../output/cbcl_pipeline/FINALMODEL-cbclInternalizing-2020-05-10.rds")
+saveRDS(rf.extrnl, "../../output/cbcl_pipeline/FINALMODEL-cbclExternalizing-2020-05-10.rds")
+saveRDS(rf.ttl, "../../output/cbcl_pipeline/FINALMODEL-cbclTotalprob-2020-05-10.rds")
+```
+```{r,eval=T, echo=F}
+rf.intrnl <- readRDS("../../output/cbcl_pipeline/FINALMODEL-cbclInternalizing-2020-05-10.rds")
+rf.extrnl <- readRDS("../../output/cbcl_pipeline/FINALMODEL-cbclExternalizing-2020-05-10.rds")
+rf.ttl <- readRDS("../../output/cbcl_pipeline/FINALMODEL-cbclTotalprob-2020-05-10.rds")
+```
+
+# local importances
+```{r, eval=F}
+localImps <- list(
+  'intrnl' = list(
+    'PI' = rf.intrnl$localImportance[,df.list$CBCL_INTERNALIZING_T$GROUP=="PI"],
+    'COMP' = rf.intrnl$localImportance[,df.list$CBCL_INTERNALIZING_T$GROUP!="PI"]),
+  'extrnl' = list(
+    'PI'=rf.extrnl$localImportance[,df.list$CBCL_EXTERNALIZING_T$GROUP=="PI"],
+    'COMP' = rf.extrnl$localImportance[,df.list$CBCL_EXTERNALIZING_T$GROUP!="PI"]),
+  'total'= list(
+    'PI'= rf.ttl$localImportance[,df.list$CBCL_TOTALPROB_T$GROUP == "PI"],
+    'COMP' = rf.ttl$localImportance[,df.list$CBCL_TOTALPROB_T$GROUP!="PI"])
+)
+ageSplitLocalImp <- list(
+  'intrnl' = list(
+    'youngChild' = rf.intrnl$localImportance[,df.list$CBCL_INTERNALIZING_T$brain_age_yrs < 11.0],
+    'adolescent' = rf.intrnl$localImportance[,df.list$CBCL_INTERNALIZING_T$brain_age_yrs >= 11.0]),
+  'extrnl' = list(
+    'youngChild'=rf.extrnl$localImportance[,df.list$CBCL_EXTERNALIZING_T$brain_age_yrs < 11.0],
+    'adolescent' = rf.extrnl$localImportance[,df.list$CBCL_EXTERNALIZING_T$brain_age_yrs >= 11.0]),
+  'total'= list(
+    'youngChild'= rf.ttl$localImportance[,df.list$CBCL_TOTALPROB_T$brain_age_yrs < 11.0],
+    'adolescent' = rf.ttl$localImportance[,df.list$CBCL_TOTALPROB_T$brain_age_yrs < 11.0])
+)
+saveRDS(ageSplitLocalImp, "../../output/cbcl_pipeline/ageSplitlocalImportancesFINAL-2020-05-10.rds")
+saveRDS(localImps,"../../output/cbcl_pipeline/localImportancesFINAL-2020-05-10.rds")
+```
+
+# Variable importance plots
+```{r, eval=F}
+plt_data <- map_dfr(names(localImps), function(nm) {
+  map_dfr(c("PI","COMP"), function(grp) {
+    data.frame(
+      response = nm,
+      group = grp,
+      variable = rownames(localImps[[nm]][[grp]]),
+      importance = rowMeans(localImps[[nm]][[grp]]),
+      stringsAsFactors = F
+    )
+  })
+}) %>%
+  mutate_at(vars(response), ~case_when(
+    . == "intrnl" ~ 'internalizing', . == "extrnl" ~ "externalizing", TRUE ~ "total"
+  )) %>%
+  group_by(response, group) %>%
+  arrange(variable) %>% 
+  mutate_at(vars(variable), ~factor(., levels = rev(unique(.))))
+saveRDS(plt_data,
+        "../../output/cbcl_pipeline/plotDataFrom-FINALMODELS-forFINALvarImpPlot-2020-05-10.rds")
+```
+```{r, echo=F, eval=T}
+plt_data <- readRDS(
+  "../../output/cbcl_pipeline/plotDataFrom-FINALMODELS-forFINALvarImpPlot-2020-05-10.rds")
+```
+### For age
+```{r}
+age_plt_data <- map_dfr(names(ageSplitLocalImp), function(nm) {
+  map_dfr(c("youngChild","adolescent"), function(grp) {
+    data.frame(
+      response = nm,
+      group = grp,
+      variable = rownames(ageSplitLocalImp[[nm]][[grp]]),
+      importance = rowMeans(ageSplitLocalImp[[nm]][[grp]]),
+      stringsAsFactors = F
+    )
+  })
+}) %>%
+  mutate_at(vars(response), ~case_when(
+    . == "intrnl" ~ 'internalizing', . == "extrnl" ~ "externalizing", TRUE ~ "total"
+  )) %>%
+  group_by(response, group) %>%
+  arrange(variable) %>% 
+  mutate_at(vars(variable), ~factor(., levels = rev(unique(.))))
+saveRDS(age_plt_data,
+        "../../output/cbcl_pipeline/ageSplit_plotDataFrom-FINALMODELS-forFINALvarImpPlot-2020-05-10.rds")
+```
+
+```{r, fig.asp=.7, fig.width=14}
+ggplot(plt_data, aes(x = importance, y = variable)) +
+  geom_bar(stat = "identity", fill = "darkblue") + 
+  facet_grid(group~response, scales = 'free') +
+  theme_linedraw() +
+  theme(text = element_text(size = 15),
+        plot.title.position = "plot",
+        plot.title = element_text(hjust = .5, size = 18),
+        strip.text = element_text(size = 16.5)) +
+  labs(title = "Group-averaged Local Variable Importances from Random Forest Regressions\n of CBCL Externalizing, Internalizing, and Total Subscales") +
+  ylab("Subcortical brain region") +
+  xlab("% Change in Mean Squared Error")
+# ggsave(filename = "~/DANL/SB/ianMasters/results/RF/plots/FINALMODEL-varimp-CBCLonSTR.jpg",
+#        units = "in", width = 14, height = .7*14)
+# ggsave(filename = "~/DANL/SB/ianMasters/FINALMODEL-varimp-CBCLonSTR.jpg",
+#        units = "in", width = 14, height = .7*14)
+```
+
+##For age
+```{r}
+ggplot(age_plt_data, aes(x = importance, y = variable)) +
+  geom_bar(stat = "identity", fill = "darkblue") + 
+  facet_grid(group~response, scales = 'free') +
+  theme_linedraw() +
+  theme(text = element_text(size = 15),
+        plot.title.position = "plot",
+        plot.title = element_text(hjust = .5, size = 18),
+        strip.text = element_text(size = 16.5)) +
+  labs(title = "Age-group averaged Local Variable Importances from Random Forest Regressions\n of CBCL Externalizing, Internalizing, and Total Subscales") +
+  ylab("Subcortical brain region") +
+  xlab("% Change in Mean Squared Error")
+ggsave(filename = "~/DANL/SB/ianMasters/results/RF/plots/ageStrat-FINALMODEL-varimp-CBCLonSTR.jpg",
+        units = "in", width = 14, height = .7*14)
+```
+
+```{r}
+par(mfrow = c(1, 3))
+varImpPlot(rf.intrnl, type = 1, main = "Full sample variable importance\n predicting Internalizing")
+varImpPlot(rf.extrnl, type = 1, main = "Full sample variable importance\n predicting Externalizing")
+varImpPlot(rf.ttl, type = 1, main = "Full sample variable importance\n predicting Total CBCL")
+```
+

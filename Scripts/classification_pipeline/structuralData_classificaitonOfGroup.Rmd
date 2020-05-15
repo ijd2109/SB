@@ -1,0 +1,469 @@
+---
+title: "structuralData_classificationOfGroup"
+author: "Ian Douglas"
+date: "4/22/2020"
+output: html_document
+---
+### Load in packages
+```{r, warning=FALSE, message=FALSE, results='hide'}
+if(!require(tidyverse)){install.packages("tidyverse", repos = 'https://cran.us.r-project.org')}
+if(!require(tidyverse)){install.packages("haven", repos = 'https://cran.us.r-project.org')}
+library(tidyverse)
+library(haven)
+library(ranger)
+library(randomForest)
+library(vip)
+library(scales)
+library(MLmetrics)
+library(data.table)
+source("../../Scripts/misc/descending_rank.R")
+source("../../Scripts/misc/min_max.R")
+```
+### Load in variable key
+Based on Michelle Van Tiegham's key, read in the names of brain region
+```{r}
+subCortVarNames <- read.csv("../../data/structuralVarNames20191002_MVT.csv",
+                            stringsAsFactors = FALSE) %>%
+  filter(X...don.t.include != "X") %>%
+  filter(!var %in% c("rhCortexVol", "lhCortexVol")) %>%
+  mutate_at('var', ~ifelse(grepl("^CC_", .), ., gsub("_", "\\.", .)))
+```
+### Load in the structural data from which to select the above variables
+```{r}
+load( # this will load a dataset called monster_SB
+  "../../data/raw/3_ALL_long_cort_symptoms_brain_structure_function_epi_ages4-19_2019-05-15.Rdata"
+)
+# select the desired regions, as well as covariates and ID columns for later adjustment
+labelledBrainData <- monster_SB %>%
+  select(IDENT_SUBID:SUBJECTID_long, WAVE, DEM_3_GENDER_CHILD = DEM_3_GENDER_CHILD.x,
+         IDENT_SUBTYPE, GROUP, Session, brain_age_yrs, all_of(subCortVarNames$var))
+```
+### Removing NA, WAVE3, and group-factor recoding
+- Remove rows where subjects are missing the structural data required to predict group
+- remove all WAVE3 data where a different scanner was used
+- Recode the group variable so that there are only two categories (PI and COMP)
+- Rename gender to indicate that it is a factor wherein 1=Female, 0=Not
+```{r}
+labelledBrainData <- labelledBrainData %>%
+  filter(WAVE != "WAVE3") %>%
+  filter(rowSums(select(., all_of(subCortVarNames$var))) != 0) %>%
+  filter(IDENT_SUBTYPE == 0 | IDENT_SUBTYPE == 1) %>%
+  mutate(GROUP = replace(GROUP, is.na(GROUP), 
+                         ifelse(IDENT_SUBTYPE==1, "PI", ifelse(IDENT_SUBTYPE == 0, "COMP", GROUP)))) %>%
+  # remove some redundant variables
+  select(-IDENT_SUBTYPE, -index_wave, -SUBJECTID_long, -Session) %>%
+  select(IDENT_SUBID, GROUP, GENDER_FEMALE = DEM_3_GENDER_CHILD, brain_age_yrs, WAVE, everything()) %>%
+  mutate_at(vars(GENDER_FEMALE, GROUP), factor) %>%
+  # one more detail: order the levels of the group factor as c(PI, COMP)
+  mutate(GROUP = factor(GROUP, levels = c("PI", "COMP")))
+saveRDS(labelledBrainData, "../../data/master/masterStrDataLong.rds")
+```
+```{r}
+labelledBrainData <- readRDS("../../data/master/masterStrDataLong.rds")
+```
+# Adjust the data for ICV age, and gender
+```{r}
+# (1) create a column that weights each row, so that each participant has equal weight, divided up amongst there repeated measures if they have scans at multiple waves. This way we use all data in the covariance model but each subject is considered equally.
+adjustedData <- labelledBrainData %>%
+  group_by(IDENT_SUBID) %>% # create the weight variable here:
+  mutate(subjWeight = 1 / n()) %>% ungroup()
+# (2) Design a function to adjust for desired covariates
+adjustFun <- function(col_name) # col_name will be the name of the predictor we are adjusting
+{
+  # rename the predictor to-be-adjusted to 'x' for uniformity below
+  model.data <- setNames(adjustedData[c(col_name, "brain_age_yrs", "GENDER_FEMALE", "EstimatedTotalIntraCranialVol", "subjWeight")],
+                         nm = c("x", "brain_age_yrs", "GENDER_FEMALE", "ICV", "subjWeight")) # also changing brain vol to ICV
+  # Test for a sig covariance with age, gender, and ICV:
+  corSig = cor.test(model.data$x, model.data$brain_age_yrs)$p.value <= .05
+  anovaSig = summary(lm(x ~ GENDER_FEMALE, data = model.data, weights = subjWeight))$coefficients[2, "Pr(>|t|)"] <= .05
+  icvSig = cor.test(model.data$x, model.data$ICV)$p.value <= .05
+  allSigs <- c(corSig, anovaSig, icvSig)
+  # If a relationship is found, extract the residuals from a regression
+  if (any(c(corSig, anovaSig, icvSig))) {
+    # record if the variable covaries with age and/or gender
+    covariances <- get("covariances", envir = .GlobalEnv)
+    covariances[covariances$var==col_name, c("age_cov","gender_cov", "icv_cov")] <- c(corSig, anovaSig, icvSig)
+    assign("covariances", value = covariances, pos = .GlobalEnv)
+    # now get the residuals:
+    input.data <- model.data[, c("x", "subjWeight", c("brain_age_yrs","GENDER_FEMALE", "ICV")[allSigs])]
+    mod <- lm(x ~ .-subjWeight, data = input.data, weights = subjWeight)
+    modelSig <- df(summary(mod)$f["value"], df1=summary(mod)$f["numdf"], df2=mod$df.residual) <= .05
+    if (modelSig) resids <- mod$residuals else resids <- adjustedData[, col_name] - mean(adjustedData[, col_name])
+  } else resids <- adjustedData[, col_name] - mean(adjustedData[, col_name])
+  resids # output the residuals (or the mean centered original variable if no relationship was found)
+}
+## create the 
+covariances <- data.frame("var" = grep("Estimated", subCortVarNames$var, invert = T, value = T), 
+                          matrix(FALSE, 
+                                 nrow = length(grep("Estimated", subCortVarNames$var, invert = T, value = T)), 
+                                 ncol= 3,
+                                 dimnames = list(NULL, c("age_cov","gender_cov", "icv_cov"))))
+# Run the function on each column
+adjustedData[grep("Estimated", subCortVarNames$var, invert = T, value = T)] <- 
+  lapply(grep("Estimated", subCortVarNames$var, invert = T, value = T), adjustFun)
+```
+```{r}
+write.csv(covariances, "covariances_2020-04-28.csv", row.names = F)
+saveRDS(adjustedData, "../../data/master/masterAdjustedStrDataLong_2020-04-28.rds")
+```
+```{r, echo=FALSE}
+adjustedData <- readRDS("../../data/master/masterAdjustedStrDataLong_2020-04-28.rds")
+```
+
+# Read in the models fit to the above data, after having REMOVED Corpus Callosum vars
+```{r}
+w.subCortForest <- readRDS("noCC_server_output/ManualRandomForestWeighted_object+Results.rds")
+aggImps_noCC <- readRDS("noCC_server_output/aggImps.rds")
+allImps_noCC <- readRDS("noCC_server_output/allImps.rds")
+```
+# OOB scores:
+```{r}
+lapply(w.subCortForest$results$Forest, function(x) x)
+```
+# Variable importance plots
+```{r}
+ggplot(aggImps_noCC, aes(x = Importance, y = Variable)) + 
+  geom_bar(aes(fill = Rank), stat = "identity") +
+  guides(fill = guide_colorbar(reverse = TRUE)) +
+  scale_fill_viridis_c(direction = -1) +
+  theme_linedraw() +
+  labs(title = 
+         "Permutation Variable Importances for Subscortical Grey Matter Volume") +
+  theme(plot.title = element_text(hjust = .5))
+```
+
+```{r}
+ggplot(data = NULL, aes(y = Variable)) +
+  geom_jitter(data = allImps_noCC,
+              aes(x = Importance, color = avgRank), width =.1, alpha = .1) +
+  geom_point(data = filter(allImps_noCC, !duplicated(Variable)),
+             aes(x = VI)) +
+  geom_errorbar(data = filter(allImps_noCC, !duplicated(Variable)),
+                aes(x = VI, xmin = VI-2*impSD, xmax = VI+2*impSD))
+  guides(color = guide_colorbar(reverse = TRUE)) +
+  scale_color_viridis_c(direction = -1) +
+  theme_linedraw()
+```
+
+`BELOW IS THE SAME AS THE ABOVE, BUT WITH Corpus Callosum VARIABLES IN THE DATA`
+# Run another one with `randomForest` for easier stratified resampling
+## In order to get the predictions from each individual tree, produce one bootstrapped tree at a time.
+```{r}
+# first augment the data so that each participant who is weighted with 1 (instead of .5) is duplicated
+w.rf_data <- adjustedData %>%
+  rbind(., filter(adjustedData, subjWeight == 1)) %>%
+  select(-WAVE,-brain_age_yrs,-GENDER_FEMALE, -EstimatedTotalIntraCranialVol)
+# define a function to produce the trees
+rfClassifier <- function(seed)
+{
+  set.seed(seed)
+  randomForest(
+    GROUP ~.-IDENT_SUBID-subjWeight, data = w.rf_data,
+    mtry = sqrt(ncol(w.rf_data) - 2),
+    ntree = 1, # one tree,
+    nodesize = 3, # terminal nodes must contain at least 3 subjects (with the same prediction)
+    strata = w.rf_data$GROUP,
+    sampsize = rep(n_distinct(adjustedData$IDENT_SUBID[adjustedData$GROUP=="PI"]), 
+                   times = n_distinct(adjustedData$GROUP)),
+    importance = TRUE,
+    keep.inbag = TRUE,
+    keep.forest = TRUE
+  )
+}
+# Fit a forest of these bootstrapped trees
+w.forest <- lapply(1:901, function(seed) {
+  rfClassifier(seed = seed)
+})
+# now add to each result the IDENT_SUBID of all subjects in bag and oob
+# Note, this is done manually b/c inbag does not mean a subject is not ALSO out of bag
+for (i in 1:length(w.forest)) {
+  the_model <- w.forest[[i]]
+  inbag.index <- row(the_model$inbag)[, 1][the_model$inbag[, 1] != 0]
+  w.forest[[i]]$inbag.id <- w.rf_data$IDENT_SUBID[inbag.index]
+  w.forest[[i]]$oob.id <- w.rf_data$IDENT_SUBID[!w.rf_data$IDENT_SUBID %in% w.forest[[i]]$inbag.id]
+  w.forest[[i]]$the_tree <- getTree(the_model, k = 1, labelVar = TRUE) # also add the tree
+  # Now get the out of bag predictions to the people in "oob.id"
+  w.forest[[i]]$oob.predictions <- predict(
+    the_model, 
+    newdata = w.rf_data[w.rf_data$IDENT_SUBID %in% w.forest[[i]]$oob.id, ],
+    type = "response" # this will be either 1 or 0, as an integer rather than character
+  )
+  w.forest[[i]]$oob.confusion <- ConfusionMatrix(
+    y_pred = w.forest[[i]]$oob.predictions,
+    y_true = w.rf_data$GROUP[w.rf_data$IDENT_SUBID %in% w.forest[[i]]$oob.id]
+  )
+  w.forest[[i]]$oob.f1_score <- F1_Score(
+    w.forest[[i]]$oob.predictions, 
+    y_true = w.rf_data$GROUP[w.rf_data$IDENT_SUBID %in% w.forest[[i]]$oob.id], 
+    positive = "PI") 
+  w.forest[[i]]$oob.Accuracy <- with(w.forest[[i]], sum(diag(oob.confusion))/sum(oob.confusion))
+}
+# Forest score
+w.rf_results <- list()
+for (i in c("oob.Accuracy", "oob.confusion", "oob.f1_score")) {
+  if (i == "oob.confusion") {
+    w.rf_results$Trees[[i]] <- lapply(w.forest, function(x) x[[i]])
+  } else w.rf_results$Trees[[i]] <- sapply(w.forest, function(x) x[[i]])
+}
+w.rf_results$Forest$oob.f1_score <- mean(w.rf_results$Trees$oob.f1_score)
+w.rf_results$Forest$oob.confusion <- matrix(rowMeans(map_dfc(
+  w.rf_results$Trees$oob.confusion, function(m) {data.frame(x = as.vector(m))}
+)), ncol = 2, dimnames = list(c("PI", "COMP"), c("PI", "COMP")))
+w.rf_results$Forest$oob.Accuracy <- mean(w.rf_results$Trees$oob.Accuracy)
+
+w.rf_results$Forest
+```
+```{r}
+saveRDS(list("model" = w.forest, "results" = w.rf_results),
+        "../classification_pipeline/ManualRandomForestWeighted_object+Results.rds")
+```
+```{r}
+w.rf_resultsList <- readRDS("../classification_pipeline/ManualRandomForestWeighted_object+Results.rds")
+```
+
+# Aggregate variable importances on oob subjects
+```{r}
+library(vip)
+startTime <- Sys.time()
+forest_of_imps <- mclapply(
+  mc.cores = detectCores() - 1, # set the number of parallel cores
+  w.rf_resultsList$model, # for each (1 tree random forest) model; do:
+  FUN = function(rf) {
+    vi_permute(
+      object = rf, 
+      feature_names = names(select(w.rf_data, -IDENT_SUBID, -GROUP, -subjWeight)),
+      train = w.rf_data %>% filter(IDENT_SUBID %in% rf$oob.id), # select OOB subjects
+      target = w.rf_data$GROUP[w.rf_data$IDENT_SUBID %in% rf$oob.id], # same
+      metric = metric_accuracy, # accuracy-based permutation importance
+      smaller_is_better = F, # larger accuracy is better
+      type = "difference", # VI = accuracy_true - accuracy_permuted
+      # function to get the predicted OOB accuracy:
+      pred_wrapper = function(object, newdata) {predict(object, newdata, type = "response")},
+      nsim = 100 # number of times to permute each predictor to calculate its importances
+    ) %>%
+      # the function outputs importance, importance SD, and the variable name; calculate rank:
+      mutate(Rank = descending_rank(Importance),
+             absoluteRank = descending_rank(abs(Importance))) %>%
+      arrange(Rank)  # arrange each df by Rank
+  }
+)
+endTime <- Sys.time()
+print(paste0("Elapsed: ", endTime - startTime))
+```
+```{r}
+aggImps = reduce(.x = forest_of_imps, .f = rbind) %>%
+  group_by(Variable) %>%
+  summarize_all(mean) %>%
+  ungroup() %>%
+  arrange(desc(Importance)) %>%
+  mutate_at(vars(Variable), ~factor(., levels = rev(.)))
+```
+
+```{r}
+ggplot(aggImps, aes(x = Importance, y = Variable)) + 
+  geom_bar(aes(fill = Rank), stat = "identity") +
+  guides(fill = guide_colorbar(reverse = TRUE)) +
+  scale_fill_viridis_c(direction = -1)
+```
+# Scatterplot bars
+```{r}
+allImps = reduce(.x = forest_of_imps, .f = rbind) %>%
+  mutate(tree = rep(1:(nrow(.)/n_distinct(Variable)), each = n_distinct(Variable))) %>%
+  mutate_at("Variable", ~factor(., levels = levels(aggImps$Variable))) %>%
+  group_by(Variable) %>%
+  mutate(VI = mean(Importance), impSD = sd(Importance), 
+         avgRank = mean(Rank), rankSD = sd(Rank), 
+         avgAbsRank = mean(absoluteRank), aRankSD = sd(absoluteRank))
+  # summarize_all(mean) %>%
+  # ungroup() %>%
+  # arrange(desc(Importance)) %>%
+  # mutate_at(vars(Variable), ~factor(., levels = rev(.)))
+```
+```{r}
+ggplot(data = NULL, aes(y = Variable)) +
+  geom_jitter(data = allImps,
+              aes(x = Importance,color = avgRank), width =.1, alpha = .1) +
+  geom_point(data = filter(allImps,!duplicated(Variable)),
+             aes(x = VI), color = "black") +
+  geom_errorbar(data = filter(allImps,!duplicated(Variable)),
+                aes(x = VI, xmin = VI-2*impSD, xmax = VI+2*impSD))
+  guides(color = guide_colorbar(reverse = TRUE)) +
+  scale_color_viridis_c(direction = -1) +
+  theme_linedraw()
+```
+
+
+
+
+Other methods tried below:
+1. "MOB Parties": Model-based partitioning using `partykit::mob`. Variants include:
+  - Random intercept models wherein structural brain volume variables are entered as potential covariates with which to partition the subjects before fitting the intercept-only model (essentially fitting the mean after each partition just like in the classical RF)
+  - 'Multilevel' models wherein a basic model predicting group from demographic predictors, such as gender, whole brain volume, and age is built after each partitiong, wherein partitioning also occurs at optimal levels of MRI data.
+  - 'Multilevel' models are fit wherein logistic regression is fit to find a Beta for each MRI variable, following partitiong over aforementioned demographic covariates.
+  
+(Summary: no partitiong in any of the above models were significant at p=.05)
+
+# Use mob to construct a forest that is weighted by subjWeight
+```{r}
+library(partykit)
+# two options for a formula:
+# Treat the brain data as covariates in an intercept-only model:
+# GROUP ~ 1 | subCortVol_1 ... subCortVol_k
+# OR
+# Use the covariate un-adjusted cortical vol, and supply covariates age, sex, and ICV
+# GROUP ~ subCortVol_1 + ... + subCortVol_k | age + sex + ICV
+# THIRD
+# A model can also treat the subCortVol as "covariates" over which to partition the data
+# GROUP ~ age + se + ICV | subCortVol_1 + ... + subCortVol_k
+
+# Setup the  formulas for each model
+regressors <- paste(grep("Estimated", subCortVarNames$var, invert = T, value = T), 
+                    collapse = " + ")
+covariates <- paste(c("GENDER_FEMALE", "brain_age_yrs", "EstimatedTotalIntraCranialVol"),
+                    collapse = " + ")
+form_io <- as.formula(paste0("GROUP ~ 1 | ", regressors))
+form_mlm <- as.formula(paste0("GROUP ~ ", regressors, " | ", covariates))
+form2_mlm <- as.formula(paste0("GROUP ~ ", covariates, " | ", regressors)) # the third model (second mlm)
+
+# Setup the logistic regression function to be used within each terminal node
+logit <- function(y, x, start = NULL, weights = NULL, offset = NULL, ...) {
+  glm(y ~ 0 + x, family = binomial, start = start, ...)
+}
+
+# Fit MOBs
+# intercept-only (covariate adjusted subcort volumees as covariates of y):
+mob1_io <- partykit::mob(
+  formula = form_io, 
+  data = adjustedData,
+  weights = adjustedData$subjWeight,
+  fit = logit # supply the logistic regression fn
+)
+# Multilevel model (GROUP regressed by un-adjusted subcort, given covariates):
+mob1_mlm <- partykit::mob(
+  formula = form_mlm, 
+  data = labelledBrainData, 
+  weights = adjustedData$subjWeight, # weights and row order is the same.
+  fit = logit # supply the logistic regression fn
+)
+mob2_mlm <- partykit::mob(
+  formula = form2_mlm, 
+  data = labelledBrainData, 
+  weights = adjustedData$subjWeight, # weights and row order is the same.
+  fit = logit # supply the logistic regression fn
+)
+```
+```{r}
+summary(mob1_io)
+```
+
+
+# Observed Variable importances
+## Plot for the original eariest wave model
+```{r}
+classify_mod <- readRDS("../classification_pipeline/subjWeighted.randomForestpkg_model_2020-05-02.rds")
+varImpPlot(classify_mod)
+vip(classify_mod, num_features = ncol(rf_data)-1, aesthetics = list(fill = "green"))
+```
+
+```{r}
+pfun <- function(object, newdata) predict(object, newdata, type = "prob")[,"PI"]
+vip(classify_mod, train = rf_data, 
+    target = "GROUP", 
+    method = "permute", 
+    metric = "auc", 
+    reference_class = "PI",
+    nsim = 30, # permute the column 100 times
+    geom = "boxplot",
+    all_permutations = T,
+    mapping = aes_string(fill = "Variable"), 
+    pred_wrapper = pfun,
+    num_features = ncol(rf_data)-1)
+```
+```{r}
+# boruta varimps
+```
+
+## P-values of varimps
+```{r}
+#importance_pvalues()
+```
+
+
+
+### load in the subcortical brain volumes
+```{r}
+rawStrData <- read.csv("../../data/raw/structural/v6_asegstats_all_compiled_Marta_02-01-2018.csv",
+                       stringsAsFactors = F, na.strings = "")
+### Immediate processing:
+# (1) : select only subcortical data, omitting other measurements except the ICV covariate
+# (2) : delete any data collected at wave three as a different scanner was used
+rawStrData.1 <- rawStrData %>%
+  filter(!grepl("_fu2", SUBJECTID_long)) %>% # 1
+  select(SUBJECTID_long, all_of(subCortVarNames$var)) %>% # 2
+  # now create a single ID indicator variable for each participant, irrespective of timepoint
+  mutate(IDENT_SUBID = str_extract(SUBJECTID_long, "[[:alpha:]]{2}[[:digit:]]{3}"),
+         index_wave = ifelse(nchar(SUBJECTID_long) > 5, 2, 1)) %>%
+  select(IDENT_SUBID, index_wave, everything(), -SUBJECTID_long)
+```
+
+### load in master data frame to attach age, sex, and group variables
+```{r}
+master_df <- read_sav("../../data/master/J.Data_Entry_Master_8_17_17_fixed_fixed_4.sav")
+# select desired variabes
+fltrdMstr <- master_df %>%
+  select(IDENT_SUBID, GROUP = IDENT_SUBTYPE, RECRUITMENT,
+         contains("subage_session", ignore.case = T), # age
+         contains("gender_child", ignore.case = T)) # gender
+```
+## Some data structure features:
+```{r}
+table(fltrdMstr$GROUP)
+print(paste0("Missing gender: ", sum(is.na(fltrdMstr$DEM_3_GENDER_CHILD))))
+print(paste0("Missing session1 age: ", sum(is.na(fltrdMstr$SUBAGE_Session1))))
+print(
+  paste0("No session1 age, has subsequent: ", 
+         sum(is.na(fltrdMstr$SUBAGE_Session1) &
+               apply(select(fltrdMstr, SUBAGE_Session1:SUBAGE_session4), 1, 
+                     function(x) !all(is.na(x))))))
+```
+```{r}
+# fltrdMstr %>% filter(is.na(fltrdMstr$SUBAGE_Session1) &
+#                        apply(select(fltrdMstr, SUBAGE_Session1:SUBAGE_session4), 1,
+#                              function(x) !all(is.na(x)))) %>% view
+# The above shows participant SB306 has no session 1 age
+```
+```{r}
+merge(rawStrData.1, fltrdMstr %>% select(IDENT_SUBID, starts_with("SUBAGE")), by="IDENT_SUBID") %>%
+  select(IDENT_SUBID, index_wave, starts_with("subage")) %>% view
+```
+
+### SKIP THIS STEP, GOING TO USE SUBJECt WEIGHTS INSTEAD
+# Now select the earliest scan for each person
+```{r}
+# filteredAdjData <- adjustedData %>%
+#   select(-subjWeight, -EstimatedTotalIntraCranialVol) %>%
+#   arrange(IDENT_SUBID, WAVE) %>%
+#   filter(!duplicated(IDENT_SUBID))
+# saveRDS(filteredAdjData,"earliestWave_masterAdjustedStrDataLong_2020-04-28.rds")
+```
+```{r}
+# filteredAdjData <- readRDS("earliestWave_masterAdjustedStrDataLong_2020-04-28.rds")
+```
+
+# Predict group in an rf with ranger
+SKIP FOR NOW AS RANGER MODEL IS NOT CODED BELOW
+## Manually create the stratified bootstrap resamples
+```{r}
+# Set seed for reproducibility!
+SEED <- 111
+set.seed(seed = SEED)
+num.tree <- 1:901
+list_of_bags <- list()
+for (t in num.tree) {
+  n_pi = sum(filteredAdjData$GROUP == "PI")
+  index_pi = grep("PI", filteredAdjData$GROUP)
+  index_c = grep("COMP",filteredAdjData$GROUP)
+  list_of_bags[[t]] <- sample(c(sample(index_pi,size = n_pi, replace = TRUE),
+                                sample(index_c, size = n_pi, replace = TRUE)))
+}
+```
