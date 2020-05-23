@@ -1,3 +1,12 @@
+# Classification of Groups using Gradient Boosting
+
+Gradient boosted classifiers were able to reliably predict the group status of unsees test-set subjects using subcortical grey matter volume (adjusted for age, sex, and total *cortex* volume).
+
+![](./AUC_HIST_FINAL-2020-05-23.jpeg)
+
+Gray matter volume in the Left Hippocampus, Right Pallidum, and Right Ventral Diencephalon proved most informative in of group status.
+![](./GBM_varImpClassificationFINAL-2020-05-23.jpeg)
+
 # CBCL pipeline
 
 The CBCL internalizing, externalizing, and total subscales were predicted through random forest regression by the volume of subcortical brian regions.
