@@ -4,7 +4,7 @@ Gradient boosted classifiers were able to reliably predict the group status of u
 
 ![](./AUC_HIST_FINAL-2020-05-23.jpeg)
 
-Gray matter volume in the Left Hippocampus, Right Pallidum, and Right Ventral Diencephalon proved most informative in of group status.
+Gray matter volume in the Left Hippocampus, Right Pallidum, and Right Ventral Diencephalon proved most informative in predicting group status.
 ![](./GBM_varImpClassificationFINAL-2020-05-23.jpeg)
 
 # CBCL pipeline
