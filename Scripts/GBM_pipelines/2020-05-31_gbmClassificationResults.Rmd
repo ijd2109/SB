@@ -1,0 +1,306 @@
+---
+title: "gbmClassificationResults"
+author: "Ian Douglas"
+date: "5/22/2020"
+output: html_document
+---
+```{r}
+library(gbm)
+library(tidyverse)
+library(MLmetrics)
+library(pROC)
+```
+
+# read in the results from the server
+```{r}
+gbm_res <- readRDS("output/noCC_classification_gbmCV-resultsList_2020-05-31.rds")
+```
+# Read in the data and process it identically to in the script to obtain the above result
+```{r}
+DATA <- readRDS("../../data/master/noCC-master-StrDataLong_GAM-Adjusted_2020-05-20.rds") %>%
+  # Change the GROUP variable to a binary indicator: 1 if PI, 0 if COMP
+  mutate_at("GROUP", ~as.numeric(. == "PI")) %>%
+  # drop the covariates (already used to adjust predictors anyway)
+  dplyr::select(-GENDER_FEMALE, -brain_age_yrs, -WAVE, -EstimatedTotalIntraCranialVol)
+DATA %>% group_by(GROUP) %>% summarize(n= n(), 
+                                       distinct.subjects = n_distinct(IDENT_SUBID), 
+                                       ratio.scans.repeated = (n - distinct.subjects) / n,
+                                       ratio.repeating.subjects = (n - distinct.subjects) / 
+                                         distinct.subjects) %>%
+  write.csv(x = ., "results/classification/2020-05-31/FINAL-modelData_summaryTable.csv", row.names = F)
+```
+```{r}
+View(read.csv("results/classification/2020-05-31/FINAL-modelData_summaryTable.csv"))
+```
+
+# print the number of resampling iterations
+```{r}
+length(gbm_res)
+```
+
+# How many participants ended up in the test set each time? How many are each group?
+```{r}
+getTestStats = function(x)
+{
+  testSet <- DATA[-x$data$train.indices, ] %>% filter(IDENT_SUBID %in% x$data$test.subid)
+  trainSet <- DATA[x$data$train.indices, ]
+  data.frame(
+    test_N = nrow(testSet),
+    test.PI.ratio = sum(testSet$GROUP) / sum(testSet$GROUP == 0),
+    test.Pct.PI = sum(testSet$GROUP) / nrow(testSet),
+    repeat.subjs.inTest = sum(duplicated(testSet$IDENT_SUBID)),
+    repeat.subjs.inTrain = sum(duplicated(trainSet$IDENT_SUBID)),
+    trainUniq.PI.Ratio = n_distinct(trainSet$IDENT_SUBID[trainSet$GROUP == 1]) /
+      n_distinct(trainSet$IDENT_SUBID[trainSet$GROUP == 0])
+  )
+}
+testStats = map_dfr(gbm_res, getTestStats)
+write.csv(testStats,
+          "results/classification/2020-05-31/testSetDescriptiveStats.csv", row.names = F)
+head(testStats)
+```
+```{r}
+testStats <- read.csv("results/classification/2020-05-31/testSetDescriptiveStats.csv",
+                      stringsAsFactors = F)
+```
+
+#Summarize the results
+```{r}
+gbmResFrame <- data.frame(
+  cross.val.AUC = sapply(gbm_res, function(x) x$GBM$BestModel_TestAUC), # will also retain names as rownames
+  n.trees = sapply(gbm_res, function(x) x$GBM$BestModel_BestNumTrees),
+  map_dfr(.x = gbm_res, .f = function(x) x$GBM$BestParams)
+)
+# saveRDS(gbmResFrame, "results/classification/gbmResults-FINAL.rds")
+```
+
+# print the mean across the cross validation iterations
+```{r}
+summarize(gbmResFrame, meanAUC = mean(cross.val.AUC), sdAUC = sd(cross.val.AUC))
+```
+
+# Plot the distribution of the AUCs
+```{r}
+rownames_to_column(gbmResFrame, "resample") %>%
+    mutate(meanAUC = mean(cross.val.AUC)) %>%
+    ggplot(.) +
+    geom_histogram(aes(x = cross.val.AUC), bins = 20, color = 'black', fill = 'lightgrey') +
+    geom_vline(aes(xintercept = meanAUC[1]), linetype = 2) +
+    theme_linedraw() +
+    ggtitle(paste0("Distribution of Cross Validation AUC Computed on the Heldout Test Set\n for 100 Gradient Boosted Machines Predicting PI-group Membership")) + 
+    theme(plot.title = element_text(size = 20, hjust = .5), 
+          axis.title = element_text(size = 18), 
+          axis.text = element_text(size = 15)) +
+    xlab("AUC")
+```
+
+# Get the permutation p value for each model
+```{r}
+gbmResFrame$pvalue = sapply(rownames(gbmResFrame), function(x) {
+  y_hat = gbm_res[[x]]$GBM$BestModelTestSetPreds
+  y_perms = lapply(1:1000, function(i) {sample((DATA %>% filter(IDENT_SUBID %in% gbm_res[[x]]$data$test.subid))$GROUP)})
+  nullAUC = sapply(y_perms, function(yperm) {AUC(y_hat, yperm)})
+  (sum(gbm_res[[x]]$GBM$BestModel_TestAUC < nullAUC) + 1) / (length(nullAUC) + 1)
+})
+# re-save
+saveRDS(gbmResFrame, "results/classification/2020-05-31/gbmResults-FINAL.rds")
+head(gbmResFrame)
+```
+
+Plot them as a function of the tuning parameters
+```{r}
+rownames_to_column(gbmResFrame, "resample") %>%
+  mutate_at("resample", ~as.numeric(sub("R.+_", "", .))) %>%
+  pivot_longer(-one_of("resample", "cross.val.AUC", "pvalue", "n.trees"), names_to = "Hyperparameter",values_to= "Optimal.Value") %>%
+  mutate(Significant = factor(ifelse(pvalue <= .05, "p<.05", "p>.05"))) %>%
+  arrange(resample, Optimal.Value) %>%
+  ggplot(data = ., aes(x = factor(Optimal.Value), y = cross.val.AUC)) +
+  geom_jitter(aes(group = Hyperparameter, color = Significant), width = .1) +
+  stat_summary(fun.data = "mean_cl_boot", colour = "black") + 
+  facet_wrap(~Hyperparameter, scales = 'free') +
+  theme(text = element_text(size = 20),
+        axis.text.x = element_text(angle = 45, hjust = .85, vjust = 1)) +
+  labs(title = "Prediction AUC of the Optimal Models and the Final Values of their Tuning Parameters") +
+  xlab("Optmal Hyperparameter Value") + ylab("Test AUC") +
+  scale_color_viridis_d(option = "viridis")
+  ggsave("results/classification/2020-05-31/hyperparameter-final-values.jpg", units = "in",
+         height = 6, width = 11, device = "jpg")
+```
+
+# visualize the distribution of the p-values
+```{r}
+ggplot(rownames_to_column(gbmResFrame, "resample") %>%
+         mutate(meanpval = mean(pvalue))) +
+  geom_histogram(aes(x = pvalue), bins = 100, color = 'black', fill = 'lightgrey') +
+  geom_vline(aes(xintercept = meanpval[1]), linetype = 2) +
+  theme_linedraw() +
+  ggtitle("Distribution of Permutation p-values Associated with the Test-set AUC of each GBM model") + 
+  labs(caption = "Dotted line denotes the mean") +
+  theme(plot.title = element_text(size = 20, hjust = .5), 
+        axis.title.y = element_text(size = 18), 
+        axis.text = element_text(size = 15),
+        axis.title.x = element_text(size = 18, face = "italic")) +
+  xlab("p")
+  ggsave("results/classification/2020-05-31/pValuesForEachModelIndividualPermTest.jpg",
+         units = "in", height = 6.6, width = 11, device = "jpg")
+```
+# Obtain the average participant when they were out of sample
+```{r}
+testFrame = cbind(DATA %>% dplyr::select(IDENT_SUBID) %>% filter(!duplicated(IDENT_SUBID)),
+  as.data.frame(lapply(rownames(gbmResFrame), function(x) {
+    y_hatFrame = data.frame(IDENT_SUBID = gbm_res[[x]]$data$test.subid, 
+                            y_hat = gbm_res[[x]]$GBM$BestModelTestSetPreds,
+                            stringsAsFactors = F) %>%
+      group_by(IDENT_SUBID) %>%
+      # average for participants who were in the test set more than once
+      summarize(y_hat = mean(y_hat)) %>% ungroup()
+    merged = merge(DATA %>% dplyr::select(IDENT_SUBID) %>%
+                         filter(!duplicated(IDENT_SUBID)), 
+                   y_hatFrame, by = "IDENT_SUBID", all.x = TRUE, all.y = F)
+    return(merged$y_hat)
+})))
+#
+averageTestSetPreds = data.frame(
+  IDENT_SUBID = testFrame$IDENT_SUBID,
+  predictedProb = rowMeans(testFrame[-1], na.rm = T),
+  predSE = unlist(apply(testFrame[-1], 1, function(x) {
+    sd(x, na.rm = T)/sqrt(sum(!is.na(x)))
+  })),
+  n = rowSums(!is.na(testFrame[-1])),
+  stringsAsFactors = F
+) %>%
+  mutate(prediction = round(predictedProb)) %>% 
+  select(IDENT_SUBID, predictedProb, predSE, prediction, n)
+#
+ResultsFrame = merge(averageTestSetPreds,
+                     DATA %>% dplyr::select(IDENT_SUBID, GROUP) %>%
+                       filter(!duplicated(IDENT_SUBID)),
+                     by = "IDENT_SUBID") %>%
+  rowwise() %>%
+  mutate(Score = prediction == GROUP) %>% ungroup()
+write.csv(testFrame, 
+          "results/classification/2020-05-31/sparseAllRawTestSetPredictionsBySubject.csv", 
+          row.names = F)
+write.csv(ResultsFrame, 
+          "results/classification/2020-05-31/FINAL-aggregateCrossValPredsAndScore.csv", 
+          row.names = F)
+
+```
+```{r}
+classificationRes <- read.csv(
+  "results/classification/2020-05-31/FINAL-aggregateCrossValPredsAndScore.csv",
+  stringsAsFactors = F)
+classificationRes
+# Conusion matrix:
+MLmetrics::ConfusionMatrix(classificationRes$prediction, classificationRes$GROUP)
+```
+
+# Performance and permutation significance of the average prediction model
+```{r}
+avgAUC = AUC(y_pred = ResultsFrame$predictedProb, y_true = ResultsFrame$GROUP)
+null_perms = lapply(1:1000, function(i) sample(ResultsFrame$GROUP))
+nullAUCs = sapply(null_perms, function(p) {
+  AUC(y_pred = ResultsFrame$predictedProb, y_true = p)
+})
+averageModPval = (sum(avgAUC < nullAUCs) + 1) / (length(nullAUCs) + 1)
+data.frame('AUC' = avgAUC, 'significance' = averageModPval)
+```
+```{r}
+jpeg("results/classification/2020-05-31/permutationTestResultsFINAL-MODEL_AUC.jpg",
+     units = "px", height = 650, width = 1300)
+plot(density(x = nullAUCs), main = "Null Distribution of AUC values",
+     xlim = c(.35, .7), sub = "Dotted line indicates Observed AUC")
+abline(v = avgAUC, lty = 2)
+dev.off()
+plot(density(x = nullAUCs), main = "Null Distribution of AUC values",
+     xlim = c(.35, .7), sub = "Dotted line indicates Observed AUC")
+abline(v = avgAUC, lty = 2)
+```
+ # ROC-AUC curve for the average test predictions on each subject
+```{r, message='hide', warning=FALSE}
+jpeg("results/classification/2020-05-31/FINAL-TESTPREDS_ROC-Curve.jpg",
+    units = "px", width = 720, height = 720)
+roc_obj = roc(ResultsFrame$GROUP, ResultsFrame$predictedProb,
+              smoothed = TRUE,
+              # arguments for ci
+              ci=TRUE, ci.alpha=0.9, stratified=TRUE,
+              # arguments for plot
+              plot=TRUE, auc.polygon=TRUE, max.auc.polygon=TRUE, grid=TRUE,
+              print.auc=TRUE, show.thres=TRUE,
+              legacy.axes = T)
+#ci_obj = ci.se(roc_obj)
+
+plot(ci_obj, "shape", col = "lightblue")
+plot(ci_obj, "bar", xlim = c(1, 0))
+dev.off()
+```
+ 
+# Summarize the variable importances
+```{r}
+allTheSameOrder = FALSE
+current = rownames(gbm_res$Resample_1$PVI)
+for (i in 2:length(gbm_res)) {
+  target = rownames(gbm_res[[i]]$PVI)
+  if (all.equal(target, current)) {
+    current <- target
+  } else break
+  if (i == length(gbm_res)) allTheSameOrder <- TRUE 
+}
+allTheSameOrder
+```
+
+```{r}
+matchAndBindCol = function(df1, df2)
+{
+  df2_arranged = df2[match(df1$variable,df2$variable) ,]
+  if (all.equal(df1$variable, df2$variable)) {
+    return(cbind(df1, df2))
+  }
+}
+#
+varImpFrame <- Reduce(f = matchAndBindCol, x = lapply(gbm_res, function(x) {
+  data.frame(variable = rownames(x$PVI), importance = rowMeans(x$PVI), row.names = 1)
+})) %>%
+  rownames_to_column("variable") %>%
+  mutate(meanImp = rowMeans(dplyr::select(., starts_with("imp"))),
+         impSD = unlist(apply(dplyr::select(., starts_with("imp")), 1, sd))) %>%
+  arrange(meanImp) %>%
+  mutate(variable = factor(variable, levels = variable)) %>%
+  dplyr::select(starts_with("imp"), everything()) %>%
+  setNames(., nm = c(paste0('importance', 1:100), names(.)[-1:-100])) %>%
+  mutate(avgRank = rowMeans(
+    mutate_all(.tbl = dplyr::select(., starts_with("imp")), ~dense_rank(desc(.))))) %>%
+  mutate(avgAbsRank = rowMeans(mutate_all(.tbl = dplyr::select(., starts_with("imp")), ~dense_rank(desc(abs(.)))))) %>%
+  dplyr::select(variable, meanImp, avgRank, avgAbsRank, everything())
+#
+saveRDS(varImpFrame, "results/classification/2020-05-31/FINAL-VARIMP_classificationGBM.rds")
+```
+```{r}
+View(varImpFrame)
+
+```
+
+# Plot var imps
+```{r}
+pivot_longer(varImpFrame, -one_of('meanImp', 'variable', 'avgRank','avgAbsRank'), 
+             names_to = "iteration", values_to = "importance") %>%
+  ggplot(.) +
+  geom_vline(xintercept = 0, linetype = 2, color = "black") +
+  geom_jitter(aes(x = importance, y = variable, color = avgRank), size = 4, alpha = .45, height = .1) + 
+  #geom_point(aes(x = meanImp, y = variable), color = "red", size = 4.5, alpha = .05) +
+  # stat_summary(aes(x = importance, y = variable),
+  #                  fun.data = "mean_cl_boot", colour = "red") +
+  stat_summary(aes(x = importance, y = variable), fun = "mean", color = "red") +
+  #theme_linedraw() + 
+  scale_color_viridis_c() + 
+  guides(color = guide_colorbar(reverse = T, title = "Average\nRank", title.hjust = .5)) + 
+  theme(panel.grid.major.y = element_blank(), plot.title = element_text(hjust = .5, size = 20), 
+        axis.title = element_text(size = 18), axis.text = element_text(size = 15)) +
+  labs(title = "Each Variable's Average Permutation Importance Classifying Groups\n through 100 Repeated Cross Validation Tests") + 
+  xlab("AUC-based Permutation Importance") + ylab("Variable")
+```
+
+
+
+
+
