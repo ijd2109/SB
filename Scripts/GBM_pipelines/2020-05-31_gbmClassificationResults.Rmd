@@ -106,6 +106,9 @@ gbmResFrame$pvalue = sapply(rownames(gbmResFrame), function(x) {
 saveRDS(gbmResFrame, "results/classification/2020-05-31/gbmResults-FINAL.rds")
 head(gbmResFrame)
 ```
+```{r}
+gbmResFrame<-readRDS("results/classification/2020-05-31/gbmResults-FINAL.rds")
+```
 
 Plot them as a function of the tuning parameters
 ```{r}
@@ -187,6 +190,9 @@ write.csv(ResultsFrame,
 
 ```
 ```{r}
+testFrame <- read.csv(
+  "results/classification/2020-05-31/sparseAllRawTestSetPredictionsBySubject.csv",
+  stringsAsFactors = F)
 classificationRes <- read.csv(
   "results/classification/2020-05-31/FINAL-aggregateCrossValPredsAndScore.csv",
   stringsAsFactors = F)
