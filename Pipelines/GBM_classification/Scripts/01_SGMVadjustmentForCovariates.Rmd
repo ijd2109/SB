@@ -1,0 +1,194 @@
+---
+title: "structuralData_covariateAdjustment"
+author: "Ian Douglas"
+date: "4/22/2020"
+output: html_document
+---
+### Load in packages
+```{r, warning=FALSE, message=FALSE, results='hide'}
+rm(list=ls())
+if(!require(tidyverse)){install.packages("tidyverse", repos = 'https://cran.us.r-project.org')}
+if(!require(tidyverse)){install.packages("haven", repos = 'https://cran.us.r-project.org')}
+library(tidyverse)
+library(haven)
+library(ranger)
+library(randomForest)
+library(vip)
+library(scales)
+library(MLmetrics)
+library(data.table)
+source("../../Scripts/misc/descending_rank.R") # rank data in descending order
+source("../../Scripts/misc/min_max.R") # min-max normalize data
+```
+### Load in variable key
+Based on Michelle Van Tiegham's key, read in the names of brain region
+```{r}
+subCortVarNames <- read.csv("../../data/structuralVarNames20191002_MVT.csv",
+                            stringsAsFactors = FALSE) %>%
+  filter(X...don.t.include != "X") %>%
+  filter(!var %in% c("rhCortexVol", "lhCortexVol")) %>%
+  mutate_at('var', ~ifelse(grepl("^CC_", .), ., gsub("_", "\\.", .)))
+```
+### Load in the structural data from which to select the above variables
+```{r}
+load( # this will load a dataset called monster_SB
+  "../../data/raw/3_ALL_long_cort_symptoms_brain_structure_function_epi_ages4-19_2019-05-15.Rdata"
+)
+# select the desired regions, as well as covariates and ID columns for later adjustment
+labelledBrainData <- monster_SB %>%
+  dplyr::select(IDENT_SUBID:SUBJECTID_long, WAVE, DEM_3_GENDER_CHILD = DEM_3_GENDER_CHILD.x,
+         IDENT_SUBTYPE, GROUP, Session, brain_age_yrs, all_of(subCortVarNames$var))
+```
+### Removing NA, WAVE3, and group-factor recoding
+- Remove rows where subjects are missing the structural data required to predict group
+- remove all WAVE3 data where a different scanner was used
+- Recode the group variable so that there are only two categories (PI and COMP)
+- Rename gender to indicate that it is a factor wherein 1=Female, 0=Not
+```{r}
+labelledBrainData <- labelledBrainData %>%
+  filter(WAVE != "WAVE3") %>% # delete wave 3
+  filter(rowSums(dplyr::select(., all_of(subCortVarNames$var))) != 0) %>% # filter though subjects with missing data
+  filter(IDENT_SUBTYPE == 0 | IDENT_SUBTYPE == 1) %>% # select PI and COMP
+  mutate(GROUP = replace(GROUP, is.na(GROUP), # coalesce some missing group data
+                         ifelse(IDENT_SUBTYPE==1, "PI", ifelse(IDENT_SUBTYPE == 0, "COMP", GROUP)))) %>%
+  # remove some redundant variables
+  dplyr::select(-IDENT_SUBTYPE, -index_wave, -SUBJECTID_long, -Session) %>%
+  dplyr::select(IDENT_SUBID, GROUP, GENDER_FEMALE = DEM_3_GENDER_CHILD, brain_age_yrs, WAVE, everything()) %>%
+  mutate_at(vars(GENDER_FEMALE, GROUP), factor) %>%
+  # one more detail: order the levels of the group factor as c(PI, COMP)
+  mutate(GROUP = factor(GROUP, levels = c("PI", "COMP"))) %>%
+  # ADDED 2020-06-23: delete an outlier from w.r.t ICV, rename icv as ICV, delete older than 18 years old
+  # also rename left and right to L and R
+  select(IDENT_SUBID:WAVE, ICV = EstimatedTotalIntraCranialVol, everything()) %>%
+  rename_all(~sub("^Left", "L", .)) %>% rename_all(~sub("^Right", "R", .)) %>%
+  filter(ICV != max(ICV)) %>% filter(floor(brain_age_yrs) < 19)
+```
+```{r}
+saveRDS(labelledBrainData, "../../data/master/masterStrDataLong.rds")
+saveRDS(labelledBrainData, "../../data/master/masterStrDataLong_unadjusted_2020-06-23.rds") # copy for the server
+```
+```{r}
+labelledBrainData <- readRDS("../../data/master/masterStrDataLong.rds")
+```
+# Adjust the data for ICV, age, and gender
+```{r}
+# (1) create a column that weights each row, so that each participant has equal weight, divided up amongst there repeated measures if they have scans at multiple waves. This way we use all data in the covariance model but each subject is considered equally.
+adjustedData <- labelledBrainData %>%
+  group_by(IDENT_SUBID) %>% # create the weight variable here:
+  mutate(subjWeight = 1 / n()) %>% ungroup()
+
+# (2) Design a function to adjust for desired covariates
+adjustFun <- function(col_name, default = "meanCenter") # col_name will be the name of the predictor we are adjusting
+{
+  # rename the predictor to-be-adjusted to 'x' for uniformity below
+  model.data <- setNames(
+    adjustedData[c(col_name, "ICV", "brain_age_yrs", "GENDER_FEMALE", "subjWeight")],
+    nm = c("COL", "ICV", "brain_age_yrs", "GENDER_FEMALE", "subjWeight")
+  ) 
+  # Test for a sig covariance with age, gender, and ICV:
+  icvSig = cor.test(model.data$COL, model.data$ICV)$p.value <= .05
+  corSig = suppressWarnings(
+    cor.test(model.data$COL, model.data$brain_age_yrs, method = "spearman")$p.value <= .05
+  )
+  anovaSig = summary(lm(COL ~ GENDER_FEMALE, data = model.data, weights = subjWeight))$coefficients[2, "Pr(>|t|)"] <= .05
+  allSigs <- c(icvSig, corSig, anovaSig) # define in same order as the columns
+  # assign("ALLSIGS", allSigs, pos = .GlobalEnv) # for debugging
+  # If a relationship is found, extract the residuals from a regression
+  if (any(allSigs)) {
+    # record if the variable covaries with age and/or gender
+    COVAR <- try(get("covariances", envir = .GlobalEnv), silent = TRUE)
+    if(class(COVAR) == "try-error") {
+      COVAR <- data.frame(variable = subCortVarNames$var[!grepl("^CC_", subCortVarNames$var)], 
+                          icv_cov = NA, age_cov = NA, gender_cov = NA,
+                          stringsAsFactors = F) %>% filter(!grepl("^Estimated", variable))
+    }
+    COVAR[COVAR$variable==col_name, c("icv_cov", "age_cov","gender_cov")] <- allSigs
+    assign("covariances", value = COVAR, pos = .GlobalEnv)
+    # Fitting the GAM model and extracting residuals.
+    gam_model <- NULL # create the model object, which we will update in the loop
+    # This will be done in a while loop, and re-run automatically if a term in the model in not sig at p < .05
+    # If all terms are non-signiicant, the model is not fit.
+    S.PV <- FALSE # one for age, the only non-linear covariate
+    P.PV <- c(FALSE, FALSE) # one for each linear covariate
+    # Full model starting point:
+    input.data <- model.data[, c("COL", "subjWeight", c("ICV", "brain_age_yrs","GENDER_FEMALE")[allSigs])]
+    while(isFALSE(all(S.PV, P.PV))) { # if any are false, then we continue with model fitting
+      # derive a formula to fit the adjustment model, filtering by allSigs each time:
+      form <- as.formula(
+        paste0("COL~", # LHS  
+               paste(c("ICV", "s(brain_age_yrs)", "GENDER_FEMALE")[allSigs], # RHS
+                     collapse = " + "))
+      )
+      # assign("THEFORMULA", form, pos = .GlobalEnv) # for debugging
+      # Fit the model to the predictors (possibly filtered by allSigs):
+      gam_model <- gam(formula = form, data = input.data, weights = subjWeight)
+      mod.sum <- summary(gam_model)
+      # Update the indexer of significant predictors
+      # Smoothing term:
+      S.PV <- mod.sum$s.pv < .05 # if there was no smoothing term, this becomes logical(0)
+      if (length(S.PV) != 0) { # then there is a smoothing term... check that its significant (actually TRUE not FALSE)
+        if (S.PV) {gamVarNameSig <- "brain_age_yrs"} else gamVarNameSig <- c()
+      } else gamVarNameSig <- c()
+      # Parametric term(s):
+      P.PV <- mod.sum$pTerms.table[, "p-value"] < .05 # with only a smoothing term, this becomes logical(0)
+      if (length(P.PV) != 0) { # then there was at least 1 parametric term in the model.
+        # If significant, append the corresponding name of the variable to gamVarNameSig
+        if (any(P.PV)) {gamVarNameSig <- c(gamVarNameSig, rownames(mod.sum$pTerms.table)[P.PV])}
+      }
+      # Update the list of significant vars with which to reformulate the model, if needed
+      allSigs <- c("ICV", "brain_age_yrs","GENDER_FEMALE") %in% gamVarNameSig
+      # Thus, the loop will end if all variables are significant, so that isFALSE(all(S.PV, P.PV)) == FALSE,
+      # or if no variables are entered into the model at all. In this case S.PV and P.PV will both be equal to
+      # `logical(0)`, which means that all(logical(0), logical(0)) is actually/ironically TRUE, ending the loop.
+      # Otherwise, if anything is FALSE, the while loop will continue (and that variable won't be in the next formula)
+    }# end of while loop.
+    
+    # Finally, if there were any significant predictors in the model, only they will have been retained.
+    # Check again with S.PV and P.PV and then extract the residuals if so.
+    if (any(S.PV, P.PV)) { # here, any(logical(0)) = FALSE..perfect! (if `any()` is "any are TRUE")
+      resids <- gam_model$residuals
+      assign(paste0("covGamMod_", col_name), value = gam_model, pos = .GlobalEnv)
+    } else { # otherwise fit the full model (non significant) and write it out as is.
+      gam_model <- gam(COL ~ .-subjWeight, data = model.data, weights = subjWeight)
+      assign(paste0("covGamMod_", col_name), value = gam_model, pos = .GlobalEnv)
+    }
+  } # end of if (any(allSigs))
+  
+  # In the event that either allSigs was significant, but the gam model was not, or nothing in allSigs was sig:
+  # Then evaluate if we want to mean center and if not return the orignal variable.
+  if (all(!c(icvSig, corSig, anovaSig)) | isFALSE(any(S.PV, P.PV))) {
+    resids <- adjustedData[, col_name] # but:
+    if (default == "meanCenter") {
+      resids <- adjustedData[, col_name] - mean(adjustedData[, col_name]) # overwrite it as mean-centered
+    }
+  } # end if statement that only runs if nothing was significant
+  
+  # In all scenarios `resid` has been defined (but is only residuals if a model was significant, so somewhat a misnomer)
+  # Write it out:
+  return(resids)
+}# END of function
+```
+```{r}
+## create the table to store the results of each covariate adjustement model 
+# filter out CC variables and estimated total intra cranial vol
+covariances <- data.frame(variable = subCortVarNames$var[!grepl("^CC_", subCortVarNames$var)], 
+                          age_cov = NA, gender_cov = NA, icv_cov = NA, 
+                          stringsAsFactors = F) %>% filter(!grepl("^Estimated", variable))
+# Run the function on each subcort column except ICV 
+adjustedData[covariances$variable] <- 
+  lapply(covariances$variable, function(x) {
+    adjustFun(x, default = "None")
+  })
+# rm(list = c(grep("^cov",ls(), value = T))) # for debugging
+```
+# Save all the models, the covariances table, and the adjusted data
+```{r}
+write.csv(covariances, "GAMcovariances_2020-05-20.csv", row.names = F)
+# save the data and drop all CC_ regions in the proccess
+saveRDS(adjustedData %>%
+          dplyr::select(-starts_with("CC_")), "../../data/master/noCC-master-StrDataLong_GAM-Adjusted_2020-05-20.rds")
+allGamModels <- lapply(grep("^covGam", ls(), value = T), function(nm) {
+  get(nm, envir = .GlobalEnv)
+})
+saveRDS(allGamModels,"../noCC_all-GAM-models_FINAL-LIST-2020-05-20.rds")
+```
